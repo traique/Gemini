@@ -5,6 +5,7 @@ Handlers cho từng lệnh Telegram. Bot chỉ phục vụ đúng 1 user
 import logging
 import os
 
+from gemini_webapi.constants import Model
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -128,14 +129,22 @@ async def image_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status = await update.message.reply_text("🎨 Đang tạo ảnh, chờ chút...")
 
     try:
-        response = await gemini_client.ask(f"Generate an image: {prompt}")
+        response = await gemini_client.ask(
+            f"Generate an image: {prompt}", model=Model.ADVANCED_FLASH
+        )
 
         if not response.images:
-            await db.save_result(prompt_id, "image", content_text="(không có ảnh trả về)")
-            return await status.edit_text(
-                "Gemini không trả về ảnh nào. Thử mô tả chi tiết hơn, hoặc "
-                "kiểm tra xem tài khoản có được hỗ trợ tạo ảnh ở khu vực của bạn không."
+            gemini_text = (response.text or "").strip()
+            await db.save_result(prompt_id, "image", content_text=gemini_text or "(không có ảnh, không có text)")
+            msg = (
+                "Gemini không trả về ảnh nào.\n\n"
+                "Thử mô tả chi tiết hơn, hoặc kiểm tra xem tài khoản có được "
+                "hỗ trợ tạo ảnh ở khu vực của bạn không (thử trực tiếp trên "
+                "gemini.google.com bằng cùng tài khoản để so sánh)."
             )
+            if gemini_text:
+                msg += f"\n\n📝 Gemini trả lời (text):\n{gemini_text[:800]}"
+            return await status.edit_text(msg)
 
         for i, image in enumerate(response.images):
             filename = f"img_{prompt_id}_{i}.png"
@@ -181,14 +190,20 @@ async def video_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     try:
-        response = await gemini_client.ask(f"Generate a short video: {prompt}")
+        response = await gemini_client.ask(
+            f"Generate a short video: {prompt}", model=Model.ADVANCED_FLASH
+        )
 
         if not response.videos:
-            await db.save_result(prompt_id, "video", content_text="(không có video trả về)")
-            return await status.edit_text(
-                "Gemini không trả về video nào. Tài khoản của bạn có thể chưa "
-                "có quyền tạo video, hoặc cần thử lại."
+            gemini_text = (response.text or "").strip()
+            await db.save_result(prompt_id, "video", content_text=gemini_text or "(không có video, không có text)")
+            msg = (
+                "Gemini không trả về video nào.\n\n"
+                "Tài khoản của bạn có thể chưa có quyền tạo video, hoặc cần thử lại."
             )
+            if gemini_text:
+                msg += f"\n\n📝 Gemini trả lời (text):\n{gemini_text[:800]}"
+            return await status.edit_text(msg)
 
         for i, video in enumerate(response.videos):
             filename = f"video_{prompt_id}_{i}.mp4"
