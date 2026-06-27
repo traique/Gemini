@@ -6,6 +6,7 @@ services:
   - type: web
     name: gemini-telegram-bot
     runtime: python
+    region: singapore  # Gần Việt Nam nhất (oregon/ohio/virginia/frankfurt/singapore)
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn web:api --host 0.0.0.0 --port $PORT
