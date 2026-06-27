@@ -34,6 +34,14 @@ def _check_access(update: Update) -> bool:
 
 
 async def _deny(update: Update) -> None:
+    user = update.effective_user
+    actual_id = user.id if user else "unknown"
+    logger.warning(
+        "Truy cập bị từ chối - user.id=%s (@%s) | ALLOWED_USER_ID đang cấu hình=%s",
+        actual_id,
+        user.username if user else "?",
+        config.ALLOWED_USER_ID,
+    )
     await update.message.reply_text(
         "Bot này được cấu hình để chỉ phục vụ 1 người dùng cụ thể. "
         "Bạn không có quyền sử dụng bot này."
