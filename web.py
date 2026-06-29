@@ -13,6 +13,7 @@ Chạy local để test webhook (cần ngrok hoặc tunnel để có HTTPS publi
 Trên Render, start command:
     uvicorn web:api --host 0.0.0.0 --port $PORT
 """
+import asyncio
 import hmac
 import logging
 from contextlib import asynccontextmanager
@@ -37,6 +38,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 application: Application | None = None
+
+# Giữ tham chiếu mạnh tới các background task xử lý update, để tránh bị
+# garbage-collect giữa chừng (cạm bẫy kinh điển của asyncio.create_task khi
+# không lưu lại task object ở đâu cả).
+_background_tasks: set[asyncio.Task] = set()
 
 
 def _build_application() -> Application:
@@ -133,5 +139,27 @@ async def telegram_webhook(request: Request) -> Response:
 
     data = await request.json()
     update = Update.de_json(data, application.bot)
-    await application.process_update(update)
+
+    # QUAN TRỌNG: KHÔNG await process_update() trực tiếp ở đây. Nếu handler
+    # (vd /video) bị treo lâu (chờ Gemini render xong), HTTP response tới
+    # Telegram sẽ không bao giờ được trả về -> Telegram coi là gửi thất bại
+    # -> tự động gửi LẠI CHÍNH update đó sau vài phút -> bot xử lý lại từ
+    # đầu -> nếu vẫn treo thì lại bị gửi lại tiếp -> lặp vô hạn (đây chính là
+    # nguyên nhân tin nhắn "Đang tạo video..." lặp lại liên tục hàng giờ).
+    # Trả 200 ngay, xử lý update trong background task riêng để cắt đứt
+    # vòng lặp retry của Telegram, bất kể handler bên dưới chạy bao lâu.
+    task = asyncio.create_task(application.process_update(update))
+    _background_tasks.add(task)
+
+    def _on_task_done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        # process_update() của PTB tự bắt lỗi qua add_error_handler, nhưng
+        # phòng trường hợp có exception lọt ra ngoài (vd lỗi xảy ra TRƯỚC
+        # khi PTB kịp dispatch vào error_handler), log lại để còn thấy trên
+        # Render logs thay vì biến mất âm thầm.
+        if not t.cancelled() and t.exception():
+            logger.error("Background task xử lý update lỗi không bắt được:", exc_info=t.exception())
+
+    task.add_done_callback(_on_task_done)
+
     return Response(status_code=200)
