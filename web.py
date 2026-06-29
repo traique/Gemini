@@ -46,7 +46,10 @@ def _build_application() -> Application:
     app.add_handler(CommandHandler("anh", handlers.image_cmd))
     app.add_handler(CommandHandler("video", handlers.video_cmd))
     app.add_handler(CommandHandler("content", handlers.content_cmd))
+    app.add_handler(CommandHandler("reset", handlers.reset_chat_cmd))
     app.add_handler(CommandHandler("history", handlers.history_cmd))
+    # Tin nhắn thường (không phải lệnh /...) -> chat tự nhiên với Gemini.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.chat_msg))
     # Bắt mọi lệnh không khớp ở trên (phải add sau cùng)
     app.add_handler(MessageHandler(filters.COMMAND, handlers.unknown_cmd))
     # Bắt mọi exception không được catch trong handler ở trên.
