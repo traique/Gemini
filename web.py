@@ -16,6 +16,10 @@ Trên Render, start command:
 import hmac
 import logging
 from contextlib import asynccontextmanager
+import io
+from contextlib import redirect_stdout
+
+from diagnose_gemini import main as diagnose_main
 
 from fastapi import FastAPI, Request, Response
 from telegram import Update
@@ -91,6 +95,25 @@ async def health() -> dict:
     """
     return {"status": "ok"}
 
+@api.get("/diagnose")
+async def diagnose() -> Response:
+    """
+    Chạy diagnose_gemini.py ngay trên Render.
+    Chỉ dùng để debug, xong nhớ xóa endpoint này.
+    """
+
+    buf = io.StringIO()
+
+    try:
+        with redirect_stdout(buf):
+            await diagnose_main()
+    except Exception as e:
+        print(f"Lỗi ngoài dự kiến: {type(e).__name__}: {e}")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/plain; charset=utf-8",
+    )
 
 @api.post(config.WEBHOOK_PATH)
 async def telegram_webhook(request: Request) -> Response:
