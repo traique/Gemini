@@ -236,8 +236,16 @@ async def image_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         # Dùng model MẶC ĐỊNH (giống /content). KHÔNG ghim model cũ vì model cũ
         # có thể không còn kích hoạt được tính năng tạo ảnh sau khi Gemini đổi sang họ 3.x.
+        # QUAN TRỌNG: dùng ask_image() (ưu tiên model Flash) thay vì ask()
+        # thường. ask_image() đã có sẵn trong gemini_client.py với đúng mục
+        # đích này nhưng trước đây không được gọi ở bất kỳ đâu - /anh vẫn
+        # gọi ask() (model mặc định, dễ bị Google route vào Pro/Thinking,
+        # vốn có quota tạo ảnh/ngày THẤP HƠN NHIỀU so với Flash trên CÙNG
+        # tài khoản) -> đây là nguyên nhân thật của lỗi "hết giới hạn" dù
+        # trang Cài đặt báo mới dùng 2%: quota tạo ảnh là quota RIÊNG theo
+        # model, không phải % tổng hiển thị ở Cài đặt.
         response = await _ask_with_media_retry(
-            lambda: gemini_client.ask(f"Generate an image: {prompt}"), "images"
+            lambda: gemini_client.ask_image(f"Generate an image: {prompt}"), "images"
         )
         if not response.images:
             gemini_text = (response.text or "").strip()
