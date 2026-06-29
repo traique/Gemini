@@ -33,7 +33,13 @@ def main() -> None:
     app.add_handler(CommandHandler("anh", handlers.image_cmd))
     app.add_handler(CommandHandler("video", handlers.video_cmd))
     app.add_handler(CommandHandler("content", handlers.content_cmd))
+    app.add_handler(CommandHandler("reset", handlers.reset_chat_cmd))
     app.add_handler(CommandHandler("history", handlers.history_cmd))
+    # Tin nhắn thường (không phải lệnh /...) -> chat tự nhiên với Gemini.
+    # Phải add TRƯỚC handler catch-all filters.COMMAND ở dưới, vì 2 filter
+    # này loại trừ nhau (COMMAND vs ~COMMAND) nên thực ra thứ tự không ảnh
+    # hưởng tới việc match, nhưng đặt theo đúng luồng đọc cho dễ hiểu.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.chat_msg))
     # Bắt mọi lệnh không khớp ở trên (phải add sau cùng)
     app.add_handler(MessageHandler(filters.COMMAND, handlers.unknown_cmd))
     # Bắt mọi exception không được catch trong handler ở trên - nếu thiếu,
