@@ -34,6 +34,15 @@ HISTORY_LIMIT = 10
 NO_MEDIA_RETRY_ATTEMPTS = 2          # số lần thử LẠI (chưa tính lần gọi đầu)
 NO_MEDIA_RETRY_DELAY_SEC = 2
 
+# gemini_webapi.GeneratedVideo.save() tự poll lại mỗi 10s nếu video server
+# vẫn đang generate (HTTP 206), bằng 1 vòng `while True` KHÔNG có giới hạn
+# số lần thử ở phía thư viện. Nếu video kẹt mãi (vd lỗi phía Google, hoặc
+# tài khoản không thật sự có quyền tạo video), việc chờ vô hạn này đã từng
+# khiến handler treo hàng giờ -> Telegram webhook timeout -> Telegram gửi
+# lại CHÍNH update đó nhiều lần (xem ghi chú trong web.py). Đặt timeout ở
+# tầng gọi để đảm bảo LUÔN có phản hồi cho người dùng trong thời gian hữu hạn.
+VIDEO_SAVE_TIMEOUT_SEC = 240  # 4 phút - rộng hơn nhiều mức "1-2 phút" đã quảng cáo
+
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
     "💬 Gõ tin nhắn bình thường để *chat tự nhiên* với Gemini (không cần "
@@ -222,6 +231,18 @@ async def _ask_with_media_retry(call_fn, media_attr: str):
     return response
 
 
+async def _save_video_with_timeout(video, path: str, filename: str):
+    """
+    Bọc video.save() với timeout cứng (VIDEO_SAVE_TIMEOUT_SEC) - xem giải
+    thích đầy đủ ở constant phía trên. Raise asyncio.TimeoutError nếu quá
+    giờ, caller cần bắt riêng để báo người dùng thay vì để treo vô hạn.
+    """
+    await asyncio.wait_for(
+        video.save(path=path, filename=filename, verbose=False),
+        timeout=VIDEO_SAVE_TIMEOUT_SEC,
+    )
+
+
 # ---------------------------------------------------------------------------
 # /anh - tạo ảnh
 # ---------------------------------------------------------------------------
@@ -313,7 +334,24 @@ async def video_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return await status.edit_text(msg)
         for i, video in enumerate(response.videos):
             filename = f"video_{prompt_id}_{i}.mp4"
-            await video.save(path=str(config.MEDIA_DIR), filename=filename, verbose=False)
+            try:
+                await _save_video_with_timeout(video, str(config.MEDIA_DIR), filename)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "video.save() vượt quá %ss (vẫn HTTP 206 - Gemini chưa render xong).",
+                    VIDEO_SAVE_TIMEOUT_SEC,
+                )
+                await db.save_result(
+                    prompt_id, "video",
+                    content_text=f"Timeout sau {VIDEO_SAVE_TIMEOUT_SEC}s chờ Gemini render video",
+                )
+                await update.message.reply_text(
+                    "⏱️ Gemini render video quá lâu (đã chờ "
+                    f"{VIDEO_SAVE_TIMEOUT_SEC // 60} phút) nên mình dừng lại. "
+                    "Có thể tài khoản chưa có quyền tạo video, hoặc Gemini đang lỗi - "
+                    "thử lại với mô tả ngắn/đơn giản hơn nhé."
+                )
+                continue
             full_path = config.MEDIA_DIR / filename
             size_mb = full_path.stat().st_size / (1024 * 1024)
             if size_mb > TELEGRAM_VIDEO_SIZE_LIMIT_MB:
@@ -388,7 +426,22 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if response.videos:
             for i, video in enumerate(response.videos):
                 filename = f"chat_{prompt_id}_{i}.mp4"
-                await video.save(path=str(config.MEDIA_DIR), filename=filename, verbose=False)
+                try:
+                    await _save_video_with_timeout(video, str(config.MEDIA_DIR), filename)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "video.save() (chat) vượt quá %ss (vẫn HTTP 206).",
+                        VIDEO_SAVE_TIMEOUT_SEC,
+                    )
+                    await db.save_result(
+                        prompt_id, "video",
+                        content_text=f"Timeout sau {VIDEO_SAVE_TIMEOUT_SEC}s chờ Gemini render video",
+                    )
+                    await update.message.reply_text(
+                        "⏱️ Gemini render video quá lâu nên mình dừng lại, thử lại với mô tả "
+                        "ngắn hơn hoặc dùng /video nhé."
+                    )
+                    continue
                 full_path = config.MEDIA_DIR / filename
                 size_mb = full_path.stat().st_size / (1024 * 1024)
                 if size_mb > TELEGRAM_VIDEO_SIZE_LIMIT_MB:
