@@ -31,8 +31,6 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handlers.start_cmd))
     app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("anh", handlers.image_cmd))
-    app.add_handler(CommandHandler("video", handlers.video_cmd))
-    app.add_handler(CommandHandler("content", handlers.content_cmd))
     app.add_handler(CommandHandler("reset", handlers.reset_chat_cmd))
     app.add_handler(CommandHandler("history", handlers.history_cmd))
     # Ảnh gửi vào -> tự động phân tích thành prompt (xem handlers.photo_msg)
