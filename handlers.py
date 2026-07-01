@@ -45,22 +45,21 @@ VIDEO_SAVE_TIMEOUT_SEC = 240  # 4 phút - rộng hơn nhiều mức "1-2 phút" 
 
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
-    "💬 Gõ tin nhắn bình thường để *chat tự nhiên* với Gemini (không cần "
-    "lệnh /). Gemini sẽ tự quyết định trả lời text hay tạo video tuỳ nội "
-    "dung bạn nhắn, và nhớ được ngữ cảnh các lượt trước.\n\n"
-    "🖼️ *Gửi 1 ảnh bất kỳ* (kèm caption nếu muốn định hướng thêm) để "
-    "Gemini phân tích và viết lại thành 1 prompt tiếng Anh — copy prompt đó "
-    "sang app Gemini để tự tạo ảnh.\n\n"
+    "💬 Gõ tin nhắn bình thường để hỏi về *chứng khoán Việt Nam* (giá, phân "
+    "tích kỹ thuật/cơ bản, tin tức...) — bot chỉ trả lời trong phạm vi này, "
+    "theo múi giờ Việt Nam.\n\n"
+    "🖼️ *Gửi 1 ảnh chân dung* (kèm caption nếu muốn định hướng thêm về bối "
+    "cảnh/trang phục) để Gemini viết lại thành 1 prompt \"identity-lock\" "
+    "tiếng Anh — dùng prompt đó CÙNG với ảnh gốc trên app Gemini để tạo ảnh "
+    "mới giữ nguyên khuôn mặt.\n\n"
     "/video <mô tả> — ép tạo video ngắn\n"
     "/content <chủ đề> — viết content Facebook\n"
-    "/reset — xoá ngữ cảnh chat tự nhiên, bắt đầu hội thoại mới\n"
+    "/reset — xoá ngữ cảnh chat, bắt đầu hội thoại mới\n"
     "/history — xem 10 lượt gần nhất\n"
     "/help — hiển thị hướng dẫn này\n\n"
-    "*Ví dụ chat tự nhiên:*\n"
-    "Hôm nay Sài Gòn có mưa không?\n\n"
-    "*Ví dụ dùng lệnh /:*\n"
-    "/video Hoàng hôn trên biển Đà Nẵng\n"
-    "/content Review quán cafe ở Sài Gòn"
+    "*Ví dụ chat:*\n"
+    "Giá cổ phiếu FPT hôm nay bao nhiêu?\n"
+    "Phân tích kỹ thuật của HPG gần đây thế nào?"
 )
 
 
@@ -180,8 +179,10 @@ async def _record_failure(prompt_id: int, result_type: str, error: Exception) ->
 @restricted
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Xin chào! Bot tạo ảnh/video/content bằng Gemini Pro qua Telegram.\n"
-        "Cứ gõ chuyện bình thường để chat với mình, không cần lệnh /.\n"
+        "Xin chào! Mình là trợ lý chứng khoán Việt Nam, kèm tính năng viết "
+        "prompt tạo ảnh giữ nguyên khuôn mặt từ ảnh bạn gửi.\n"
+        "Cứ gõ câu hỏi về cổ phiếu/thị trường để chat, hoặc gửi 1 tấm ảnh "
+        "để mình viết prompt.\n"
         "Gõ /help để xem các lệnh đầy đủ."
     )
 
@@ -483,30 +484,47 @@ async def reset_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------------------------------------------------------------------------
 # Gửi ảnh -> Gemini phân tích và viết lại thành prompt tạo ảnh
 # ---------------------------------------------------------------------------
-IMAGE_ANALYZE_INSTRUCTION_BASE = (
-    "You are an expert prompt engineer for AI image generation tools "
-    "(Midjourney, DALL-E, Gemini's own image generation, etc). "
-    "Look carefully at the attached image and write ONE detailed, ready-to-use "
-    "English prompt that could recreate a very similar image with an AI image "
-    "generator. Describe: subject, pose/action, composition, setting/background, "
-    "lighting, color palette, art style or photography style, camera angle, and "
-    "any notable details or mood. "
-    "Output ONLY the prompt itself as plain text (no markdown, no quotes, no "
-    "preamble like 'Here is the prompt:', no explanation before or after)."
-)
+IMAGE_ANALYZE_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools (Midjourney, DALL-E, Gemini image generation, etc), specialized in writing "identity-preserving" prompts: prompts designed to be used TOGETHER WITH the original reference photo, so the AI tool keeps the exact face from the reference image while generating a brand new scene, outfit, and pose around it.
+
+Look at the attached reference image and write ONE complete, ready-to-use English prompt following EXACTLY this structure and style (this is a real example of the expected style/quality - match its level of detail, but invent NEW creative content appropriate to the reference photo, do not literally copy this example unless it genuinely fits):
+
+---
+[Identity Lock: Strictly maintain the exact facial features, skin tone, age, ethnicity, and facial proportions of the person in the reference image].
+
+Ultra-photorealistic luxury Korean café editorial, modern fashion portrait. The woman from the reference image is sitting on a minimalist metal chair in a modern cafe. Her body is turned at a 45-degree angle to the camera, with her hands resting lightly on the table. Elegant, natural posture. Her face is slightly tilted down, looking gently forward with a soft, feminine, and thoughtful expression.
+
+Her long black hair is styled in a neat half-up half-down look, with a few soft loose strands naturally framing her face. She is wearing an elegant yet youthful cream-white corset top with delicate ruffles and pleated details, paired with a high-waisted beige mini skirt. She wears a delicate minimalist silver pendant necklace.
+
+On the table in the foreground, there are two premium glass drinks: a ruby-red fruit tea with orange and lemon slices, and a vibrant yellow orange juice with mint leaves, adding lively color accents. The cafe interior features a modern minimalist aesthetic with gray concrete walls, a black metal table, black metal chairs, and a large green potted plant in the corner.
+
+Vertical 4:5 composition, rule of thirds with the subject positioned slightly to the right, occupying about 70% of the frame. The drinks in the foreground create depth. Eye-level camera, angled 30-45 degrees from the front, knee-up shot. 50-85mm lens, shallow depth of field, creamy background bokeh.
+
+Cinematic indoor lighting combining ambient and window light. Soft warm ambient lighting with a subtle pink-purple rim light reflecting on her hair. Softly lit skin, natural colors, realistic soft shadows. Masterpiece, 8K resolution, DSLR. Visual effects: Kodak Portra 400 color grading, subtle film grain, soft glow, realistic reflections on glass. Mood: Elegant, gentle, romantic, relaxing afternoon. --ar 4:5
+---
+
+Rules for what you generate:
+1. ALWAYS start with an "[Identity Lock: ...]" line, adapted to the actual person in the reference image (gender, apparent age range, etc) - keep the same strict wording style as the example.
+2. Choose a scene, setting, outfit, hair styling, and pose that make sense as a fashion/editorial upgrade of the reference photo - if the reference photo already has a clear setting/outfit/pose, you may draw inspiration from it; if not, invent an elegant, tasteful, editorial-quality scenario similar in spirit to the example (café, outdoor, studio, street style, etc - vary it, don't always default to café).
+3. Always include, in this order: identity lock line -> overall style/scene one-liner -> pose & body language paragraph -> hair & outfit paragraph -> setting/props/background paragraph -> composition & camera paragraph (aspect ratio, framing, lens, angle) -> lighting & color-grading & mood paragraph ending with an --ar aspect ratio parameter.
+4. Keep content tasteful, fashion-editorial, fully clothed, non-sexual, non-suggestive at all times - decline any styling choice that would be revealing, sexualized, or inappropriate, and default to elegant/modest fashion styling instead.
+5. Output ONLY the final prompt as plain text, no markdown headers, no quotes, no preamble like "Here is the prompt:", no explanation before or after."""
 
 @restricted
 async def photo_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Bất kỳ ảnh nào gửi vào bot đều tự động được phân tích và viết lại thành
-    1 prompt tiếng Anh để bạn copy sang app Gemini tự tạo ảnh - THAY vì bot
-    tự tạo ảnh (tính năng tạo ảnh qua gemini-webapi đang bị chặn theo vị trí
-    server, xem config.py). Phân tích ảnh (vision) là tính năng khác, không
-    bị ảnh hưởng bởi hạn chế đó nên chạy bình thường không cần proxy/VPS.
+    1 prompt "identity-lock" tiếng Anh - dùng CHUNG với ảnh gốc khi tạo ảnh
+    trên app Gemini để giữ nguyên khuôn mặt trong ảnh, chỉ đổi bối
+    cảnh/trang phục/dáng chụp theo phong cách editorial thời trang cao cấp.
+    Dùng cách này THAY vì bot tự tạo ảnh, vì tính năng tạo ảnh qua
+    gemini-webapi đang bị chặn theo vị trí server (xem config.py về
+    GEMINI_PROXY). Phân tích ảnh (vision, không tạo ảnh mới) là tính năng
+    khác, không bị ảnh hưởng bởi hạn chế đó nên chạy bình thường không cần
+    proxy/VPS.
 
     Nếu ảnh có caption, caption đó được coi là yêu cầu/định hướng thêm của
-    bạn (vd "chỉ giữ lại phong cách, đổi nhân vật thành mèo") và được nối
-    thêm vào instruction gửi cho Gemini.
+    bạn (vd "đổi bối cảnh thành ngoài trời", "trang phục công sở thay vì
+    dạo phố") và được nối thêm vào instruction gửi cho Gemini.
     """
     user_id = update.effective_user.id
     caption = (update.message.caption or "").strip()
