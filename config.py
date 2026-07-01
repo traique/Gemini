@@ -30,6 +30,20 @@ GALLERY_CHANNEL_ID = os.getenv("GALLERY_CHANNEL_ID", "").strip() or None
 # bình thường -> set biến này tới 1 proxy có IP exit tại Việt Nam để thử.
 GEMINI_PROXY = os.getenv("GEMINI_PROXY", "").strip() or None
 
+# File chứa "skill" (system prompt) định hướng chat tự nhiên - xem
+# chat_skill.txt. Có thể override path bằng biến môi trường nếu muốn.
+CHAT_SKILL_PATH = Path(os.getenv("CHAT_SKILL_PATH", "chat_skill.txt").strip())
+
+
+def load_chat_skill() -> str:
+    """Đọc nội dung skill hiện tại từ đĩa. Trả về chuỗi rỗng nếu file không
+    tồn tại (khi đó gemini_client sẽ bỏ qua việc gắn Gem, chat chạy bình
+    thường không giới hạn phạm vi)."""
+    try:
+        return CHAT_SKILL_PATH.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+
 # Supabase Postgres - bền hơn SQLite, không bị mất khi Render free tier
 # ngủ/restart (ổ đĩa local trên Render free là ephemeral).
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -90,4 +104,4 @@ def validate(require_webhook: bool = False) -> None:
             "Thiếu biến môi trường bắt buộc: "
             + ", ".join(missing)
             + "\nXem hướng dẫn trong README.md"
-)
+        )
