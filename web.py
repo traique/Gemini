@@ -54,6 +54,8 @@ def _build_application() -> Application:
     app.add_handler(CommandHandler("content", handlers.content_cmd))
     app.add_handler(CommandHandler("reset", handlers.reset_chat_cmd))
     app.add_handler(CommandHandler("history", handlers.history_cmd))
+    # Ảnh gửi vào -> tự động phân tích thành prompt (xem handlers.photo_msg)
+    app.add_handler(MessageHandler(filters.PHOTO, handlers.photo_msg))
     # Tin nhắn thường (không phải lệnh /...) -> chat tự nhiên với Gemini.
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.chat_msg))
     # Bắt mọi lệnh không khớp ở trên (phải add sau cùng)
