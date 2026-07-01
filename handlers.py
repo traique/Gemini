@@ -14,6 +14,7 @@ from telegram.ext import ContextTypes
 import config
 import db
 import gemini_client
+import stock_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -434,8 +435,30 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not text:
         return
     user_id = update.effective_user.id
-    prompt_id = await db.save_prompt(user_id, "chat", text)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    # ── Phát hiện mã cổ phiếu trong tin nhắn -> phân tích tự động bằng dữ liệu
+    # thật (giá/kỹ thuật/ngành/dòng tiền/BCTC/tin tức), THAY vì để Gemini tự
+    # "đoán" theo kiến thức chung như chat bình thường. Xem stock_analysis.py.
+    symbols = await stock_analysis.find_valid_symbols(text)
+    if symbols:
+        prompt_id = await db.save_prompt(user_id, "stock_analysis", ",".join(symbols))
+        try:
+            for symbol in symbols:
+                status = await update.message.reply_text(f"🔍 Đang phân tích {symbol}, chờ em chút...")
+                result_text = await stock_analysis.analyze_symbol(symbol)
+                await db.save_result(prompt_id, "stock_analysis", content_text=result_text)
+                await status.delete()
+                await _reply_long_text(update.message, result_text)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Lỗi phân tích cổ phiếu")
+            await _record_failure(prompt_id, "stock_analysis", e)
+            await update.message.reply_text(
+                "❌ Có lỗi khi phân tích cổ phiếu. Hãy thử lại sau giây lát."
+            )
+        return
+
+    prompt_id = await db.save_prompt(user_id, "chat", text)
     try:
         response = await gemini_client.chat(text)
         reply_text = (response.text or "").strip()
@@ -644,7 +667,7 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     rows = await db.get_history(user_id, limit=HISTORY_LIMIT)
     if not rows:
         return await update.message.reply_text("Chưa có lịch sử nào.")
-    icon_map = {"image": "🖼️", "video": "🎬", "content": "📝", "chat": "💬", "promptify": "🔍"}
+    icon_map = {"image": "🖼️", "video": "🎬", "content": "📝", "chat": "💬", "promptify": "🔍", "stock_analysis": "📊"}
     lines = [f"🕘 <b>{HISTORY_LIMIT} lượt gần nhất:</b>\n"]
     for command_type, prompt, created_at, _result_types in rows:
         short_prompt = (
