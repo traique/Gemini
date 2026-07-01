@@ -38,6 +38,7 @@ async def get_client() -> GeminiClient:
             _client = GeminiClient(
                 config.GEMINI_SECURE_1PSID,
                 config.GEMINI_SECURE_1PSIDTS,
+                proxy=config.GEMINI_PROXY,
             )
             await _client.init(
                 timeout=60,
