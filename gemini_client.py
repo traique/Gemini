@@ -210,9 +210,9 @@ async def chat(prompt: str):
     """
     Gửi 1 tin nhắn "chat tự nhiên" (đa lượt) tới Gemini - dùng cho mọi tin
     nhắn người dùng gõ KHÔNG kèm lệnh /..., để Gemini nhớ được ngữ cảnh các
-    lượt trước (khác với ask(), vốn luôn single-turn, dùng cho /anh /video
-    /content vì những lệnh đó cần kết quả độc lập, không phụ thuộc lịch sử
-    chat).
+    lượt trước (khác với ask(), vốn luôn single-turn, dùng cho /anh và cho
+    phân tích cổ phiếu vì những tác vụ đó cần kết quả độc lập, không phụ
+    thuộc lịch sử chat).
 
     Mỗi session được gắn 1 Gem (system prompt) đọc từ chat_skill.txt, để
     Gemini chỉ trả lời trong phạm vi bạn định nghĩa trước - xem
