@@ -50,8 +50,6 @@ def _build_application() -> Application:
     app.add_handler(CommandHandler("start", handlers.start_cmd))
     app.add_handler(CommandHandler("help", handlers.help_cmd))
     app.add_handler(CommandHandler("anh", handlers.image_cmd))
-    app.add_handler(CommandHandler("video", handlers.video_cmd))
-    app.add_handler(CommandHandler("content", handlers.content_cmd))
     app.add_handler(CommandHandler("reset", handlers.reset_chat_cmd))
     app.add_handler(CommandHandler("history", handlers.history_cmd))
     # Ảnh gửi vào -> tự động phân tích thành prompt (xem handlers.photo_msg)
@@ -143,11 +141,10 @@ async def telegram_webhook(request: Request) -> Response:
     update = Update.de_json(data, application.bot)
 
     # QUAN TRỌNG: KHÔNG await process_update() trực tiếp ở đây. Nếu handler
-    # (vd /video) bị treo lâu (chờ Gemini render xong), HTTP response tới
+    # (vd /anh) bị treo lâu (chờ Gemini trả kết quả), HTTP response tới
     # Telegram sẽ không bao giờ được trả về -> Telegram coi là gửi thất bại
     # -> tự động gửi LẠI CHÍNH update đó sau vài phút -> bot xử lý lại từ
-    # đầu -> nếu vẫn treo thì lại bị gửi lại tiếp -> lặp vô hạn (đây chính là
-    # nguyên nhân tin nhắn "Đang tạo video..." lặp lại liên tục hàng giờ).
+    # đầu -> nếu vẫn treo thì lại bị gửi lại tiếp -> lặp vô hạn.
     # Trả 200 ngay, xử lý update trong background task riêng để cắt đứt
     # vòng lặp retry của Telegram, bất kể handler bên dưới chạy bao lâu.
     task = asyncio.create_task(application.process_update(update))
