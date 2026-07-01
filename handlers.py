@@ -15,18 +15,19 @@ import config
 import db
 import gemini_client
 import stock_analysis
+import stock_providers
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants (trước đây là magic numbers rải rác trong code)
 # ---------------------------------------------------------------------------
-TELEGRAM_CAPTION_MAX = 1024          # giới hạn caption ảnh/video của Telegram
+TELEGRAM_CAPTION_MAX = 1024          # giới hạn caption ảnh của Telegram
 TELEGRAM_TEXT_MAX = 4096             # giới hạn tin nhắn text của Telegram
-TELEGRAM_VIDEO_SIZE_LIMIT_MB = 49    # giới hạn gửi video qua bot Telegram (~50MB)
 GEMINI_TEXT_PREVIEW_MAX = 800        # độ dài preview text khi Gemini không trả media
 HISTORY_PROMPT_PREVIEW_MAX = 60      # độ dài rút gọn prompt hiển thị trong /history
 HISTORY_LIMIT = 10
+
 
 # Đôi khi Gemini trả lời text kiểu "đã hết giới hạn" ngay ở lần gọi đầu dù
 # tài khoản KHÔNG thực sự hết quota - thử gửi lại đúng prompt đó ngay sau
@@ -36,28 +37,20 @@ HISTORY_LIMIT = 10
 NO_MEDIA_RETRY_ATTEMPTS = 2          # số lần thử LẠI (chưa tính lần gọi đầu)
 NO_MEDIA_RETRY_DELAY_SEC = 2
 
-# gemini_webapi.GeneratedVideo.save() tự poll lại mỗi 10s nếu video server
-# vẫn đang generate (HTTP 206), bằng 1 vòng `while True` KHÔNG có giới hạn
-# số lần thử ở phía thư viện. Nếu video kẹt mãi (vd lỗi phía Google, hoặc
-# tài khoản không thật sự có quyền tạo video), việc chờ vô hạn này đã từng
-# khiến handler treo hàng giờ -> Telegram webhook timeout -> Telegram gửi
-# lại CHÍNH update đó nhiều lần (xem ghi chú trong web.py). Đặt timeout ở
-# tầng gọi để đảm bảo LUÔN có phản hồi cho người dùng trong thời gian hữu hạn.
-VIDEO_SAVE_TIMEOUT_SEC = 240  # 4 phút - rộng hơn nhiều mức "1-2 phút" đã quảng cáo
-
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
     "💬 Gõ tin nhắn bình thường để trò chuyện với em - Lan Anh - như trợ lý "
-    "cá nhân của anh, chuyện gì cũng nói chuyện được hết á. Khi nào anh hỏi "
-    "về *chứng khoán Việt Nam* (giá, phân tích kỹ thuật/cơ bản, tin tức...) "
-    "em sẽ tự chuyển sang chế độ phân tích nghiêm túc, theo múi giờ Việt "
+    "cá nhân của anh, chuyện gì cũng nói chuyện được hết á.\n\n"
+    "📊 Khi anh nhắc tới 1 *mã cổ phiếu Việt Nam*, mặc định em lấy *giá + % "
+    "tăng giảm ngay từ DNSE* trả lời liền, không phân tích dài dòng. Anh cần "
+    "phân tích kỹ thuật/cơ bản thì cứ nói rõ (vd \"phân tích giúp anh mã "
+    "FPT\") em sẽ chuyển sang chế độ phân tích nghiêm túc, theo múi giờ Việt "
     "Nam.\n\n"
     "🖼️ *Gửi 1 ảnh chân dung* (kèm caption nếu muốn định hướng thêm về bối "
     "cảnh/trang phục) để Gemini viết lại thành 1 prompt \"identity-lock\" "
     "tiếng Anh — dùng prompt đó CÙNG với ảnh gốc trên app Gemini để tạo ảnh "
     "mới giữ nguyên khuôn mặt.\n\n"
-    "/video <mô tả> — ép tạo video ngắn\n"
-    "/content <chủ đề> — viết content Facebook\n"
+    "/anh <mô tả> — tạo ảnh\n"
     "/reset — xoá ngữ cảnh chat, bắt đầu hội thoại mới\n"
     "/history — xem 10 lượt gần nhất\n"
     "/help — hiển thị hướng dẫn này\n\n"
@@ -136,10 +129,9 @@ async def _reply_long_text(message, text: str) -> None:
     """Gửi `text` bằng reply_text, tự động chia thành nhiều tin nhắn nếu vượt
     quá TELEGRAM_TEXT_MAX (4096 ký tự) - đây là giới hạn CỨNG của Telegram
     Bot API cho 1 tin nhắn text. Trước đây gọi thẳng reply_text(text) nên
-    Gemini trả lời càng dài (hay gặp ở /content hoặc chat phân tích cổ
-    phiếu) càng dễ vượt giới hạn này và Telegram trả lỗi "Message is too
-    long", khiến người dùng không nhận được phản hồi gì dù Gemini đã trả
-    lời thành công.
+    Gemini trả lời càng dài (hay gặp ở chat phân tích cổ phiếu) càng dễ vượt
+    giới hạn này và Telegram trả lỗi "Message is too long", khiến người dùng
+    không nhận được phản hồi gì dù Gemini đã trả lời thành công.
 
     Cắt tại ranh giới xuống dòng gần nhất trong giới hạn (hoặc khoảng trắng
     nếu không có xuống dòng) để không cắt ngang giữa từ/câu.
@@ -212,8 +204,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Chào anh, em là Lan Anh, trợ lý cá nhân của anh nè! 💕\n"
         "Anh cứ nhắn chuyện gì cũng được, em nói chuyện với anh bình thường. "
-        "Khi nào anh hỏi về cổ phiếu/thị trường Việt Nam, em sẽ tự chuyển "
-        "sang phân tích nghiêm túc cho anh.\n"
+        "Hỏi giá cổ phiếu em trả lời liền từ dữ liệu DNSE, còn khi nào anh "
+        "cần phân tích sâu thì cứ nói rõ, em sẽ chuyển sang phân tích nghiêm "
+        "túc cho anh.\n"
         "Anh cũng có thể gửi 1 tấm ảnh để em viết prompt tạo ảnh giữ nguyên "
         "khuôn mặt.\n"
         "Gõ /help để xem các lệnh đầy đủ nha anh."
@@ -237,19 +230,19 @@ async def _ask_with_media_retry(call_fn, media_attr: str):
     NO_MEDIA_RETRY_ATTEMPTS lần nữa) nếu Gemini trả về response hợp lệ nhưng
     KHÔNG có media (getattr(response, media_attr) rỗng).
 
-    media_attr: "images" hoặc "videos".
+    media_attr: "images".
 
-    CHỈ dùng cho /anh và /video - nơi người dùng chắc chắn muốn có media nên
-    "không có media" rõ ràng là kết quả bất thường, đáng để thử lại. KHÔNG
-    dùng cho chat tự nhiên (chat_msg) vì ở đó không có media là chuyện bình
-    thường (đa số tin nhắn không yêu cầu ảnh/video) - retry sẽ chỉ tốn lượt
-    gọi và làm chậm phản hồi vô ích.
+    CHỈ dùng cho /anh - nơi người dùng chắc chắn muốn có ảnh nên "không có
+    media" rõ ràng là kết quả bất thường, đáng để thử lại. KHÔNG dùng cho
+    chat tự nhiên (chat_msg) vì ở đó không có media là chuyện bình thường (đa
+    số tin nhắn không yêu cầu ảnh) - retry sẽ chỉ tốn lượt gọi và làm chậm
+    phản hồi vô ích.
 
     Lý do cần hàm này: retry trong gemini_client.ask()/chat() chỉ kích hoạt
     khi có exception. Trường hợp Gemini trả lời "đã hết giới hạn" bằng text
     là một response BÌNH THƯỜNG (không raise lỗi) - quan sát thực tế cho
-    thấy thử lại đúng prompt đó ngay sau thường ra ảnh/video, nên cần retry
-    thủ công ở tầng này.
+    thấy thử lại đúng prompt đó ngay sau thường ra ảnh, nên cần retry thủ
+    công ở tầng này.
     """
     response = await call_fn()
     for attempt in range(1, NO_MEDIA_RETRY_ATTEMPTS + 1):
@@ -264,18 +257,6 @@ async def _ask_with_media_retry(call_fn, media_attr: str):
     return response
 
 
-async def _save_video_with_timeout(video, path: str, filename: str):
-    """
-    Bọc video.save() với timeout cứng (VIDEO_SAVE_TIMEOUT_SEC) - xem giải
-    thích đầy đủ ở constant phía trên. Raise asyncio.TimeoutError nếu quá
-    giờ, caller cần bắt riêng để báo người dùng thay vì để treo vô hạn.
-    """
-    await asyncio.wait_for(
-        video.save(path=path, filename=filename, verbose=False),
-        timeout=VIDEO_SAVE_TIMEOUT_SEC,
-    )
-
-
 # ---------------------------------------------------------------------------
 # /anh - tạo ảnh
 # ---------------------------------------------------------------------------
@@ -288,7 +269,7 @@ async def image_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     prompt_id = await db.save_prompt(user_id, "image", prompt)
     status = await update.message.reply_text("🎨 Đang tạo ảnh, chờ chút...")
     try:
-        # Dùng model MẶC ĐỊNH (giống /content). KHÔNG ghim model cũ vì model cũ
+        # Dùng model MẶC ĐỊNH. KHÔNG ghim model cũ vì model cũ
         # có thể không còn kích hoạt được tính năng tạo ảnh sau khi Gemini đổi sang họ 3.x.
         # QUAN TRỌNG: dùng ask_image() (ưu tiên model Flash) thay vì ask()
         # thường. ask_image() đã có sẵn trong gemini_client.py với đúng mục
@@ -336,100 +317,21 @@ async def image_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /video - tạo video
-# ---------------------------------------------------------------------------
-@restricted
-async def video_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    prompt = _extract_arg(context)
-    if not prompt:
-        return await update.message.reply_text("Cú pháp: /video <mô tả video>")
-    user_id = update.effective_user.id
-    prompt_id = await db.save_prompt(user_id, "video", prompt)
-    status = await update.message.reply_text(
-        "🎬 Đang tạo video, có thể mất 1-2 phút, chờ chút..."
-    )
-    try:
-        # Dùng model MẶC ĐỊNH (giống /content), không ghim model cũ.
-        response = await _ask_with_media_retry(
-            lambda: gemini_client.ask(f"Generate a short video: {prompt}"), "videos"
-        )
-        if not response.videos:
-            gemini_text = (response.text or "").strip()
-            await db.save_result(
-                prompt_id, "video", content_text=gemini_text or "(không có video, không có text)"
-            )
-            msg = (
-                "Gemini không trả về video nào.\n\n"
-                "Tài khoản của bạn có thể chưa có quyền tạo video, hoặc cần thử lại."
-            )
-            if gemini_text:
-                msg += f"\n\n📝 Gemini trả lời (text):\n{gemini_text[:GEMINI_TEXT_PREVIEW_MAX]}"
-            return await status.edit_text(msg)
-        for i, video in enumerate(response.videos):
-            filename = f"video_{prompt_id}_{i}.mp4"
-            try:
-                await _save_video_with_timeout(video, str(config.MEDIA_DIR), filename)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "video.save() vượt quá %ss (vẫn HTTP 206 - Gemini chưa render xong).",
-                    VIDEO_SAVE_TIMEOUT_SEC,
-                )
-                await db.save_result(
-                    prompt_id, "video",
-                    content_text=f"Timeout sau {VIDEO_SAVE_TIMEOUT_SEC}s chờ Gemini render video",
-                )
-                await update.message.reply_text(
-                    "⏱️ Gemini render video quá lâu (đã chờ "
-                    f"{VIDEO_SAVE_TIMEOUT_SEC // 60} phút) nên mình dừng lại. "
-                    "Có thể tài khoản chưa có quyền tạo video, hoặc Gemini đang lỗi - "
-                    "thử lại với mô tả ngắn/đơn giản hơn nhé."
-                )
-                continue
-            full_path = config.MEDIA_DIR / filename
-            size_mb = full_path.stat().st_size / (1024 * 1024)
-            if size_mb > TELEGRAM_VIDEO_SIZE_LIMIT_MB:
-                # Trước đây không ghi gì vào DB ở case này -> /history không
-                # phản ánh được rằng lệnh đã chạy nhưng bị từ chối do quá size.
-                await db.save_result(
-                    prompt_id,
-                    "video",
-                    content_text=f"video {size_mb:.1f}MB vượt giới hạn {TELEGRAM_VIDEO_SIZE_LIMIT_MB}MB",
-                )
-                await update.message.reply_text(
-                    f"Video nặng {size_mb:.1f}MB, vượt giới hạn gửi qua bot Telegram "
-                    f"({TELEGRAM_VIDEO_SIZE_LIMIT_MB}MB). File tạm trên server sẽ bị xoá - "
-                    f"hãy giảm độ dài/chất lượng video và thử lại."
-                )
-            else:
-                video_bytes = await _read_file_bytes(full_path)
-                await update.message.reply_video(
-                    video=video_bytes, caption=prompt[:TELEGRAM_CAPTION_MAX]
-                )
-                await db.save_result(prompt_id, "video", file_path=str(full_path))
-                await _forward_to_gallery(context, video_path=full_path, caption=prompt)
-            await _safe_delete(full_path)
-        await status.delete()
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Lỗi tạo video")
-        await _record_failure(prompt_id, "video", e)
-        await status.edit_text("❌ Có lỗi khi tạo video. Hãy thử lại sau giây lát.")
-
-
-# ---------------------------------------------------------------------------
 # Chat tự nhiên - mọi tin nhắn KHÔNG bắt đầu bằng "/" đều vào đây
 # ---------------------------------------------------------------------------
 @restricted
 async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Cho phép trò chuyện tự nhiên với Gemini, không cần gõ /anh /video /content.
+    Cho phép trò chuyện tự nhiên với Gemini, không cần gõ /anh.
     Dùng gemini_client.chat() (đa lượt, có nhớ ngữ cảnh) thay vì ask()
-    (single-turn) - khác với các lệnh / vốn luôn là 1 yêu cầu độc lập.
+    (single-turn) - khác với lệnh /anh vốn luôn là 1 yêu cầu độc lập.
 
     KHÔNG dùng _ask_with_media_retry ở đây: trong chat tự nhiên, việc Gemini
-    trả lời thuần text (không kèm ảnh/video) là kết quả BÌNH THƯỜNG cho phần
-    lớn tin nhắn (chào hỏi, hỏi đáp...), không phải dấu hiệu lỗi cần thử lại.
-    Gemini sẽ tự quyết định có tạo ảnh/video hay không dựa trên nội dung bạn
-    gõ (vd "vẽ giúp tôi...", "tạo video...") - không cần prefix đặc biệt.
+    trả lời thuần text (không kèm ảnh) là kết quả BÌNH THƯỜNG cho phần lớn
+    tin nhắn (chào hỏi, hỏi đáp...), không phải dấu hiệu lỗi cần thử lại.
+    Gemini sẽ tự quyết định có tạo ảnh hay không dựa trên nội dung bạn gõ (vd
+    "vẽ giúp tôi..."), không cần prefix đặc biệt. Bot KHÔNG còn tạo video hay
+    viết content - mọi trao đổi khác đều qua chat tự nhiên với Gemini.
     """
     text = (update.message.text or "").strip()
     if not text:
@@ -437,25 +339,43 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    # ── Phát hiện mã cổ phiếu trong tin nhắn -> phân tích tự động bằng dữ liệu
-    # thật (giá/kỹ thuật/ngành/dòng tiền/BCTC/tin tức), THAY vì để Gemini tự
-    # "đoán" theo kiến thức chung như chat bình thường. Xem stock_analysis.py.
+    # ── Phát hiện mã cổ phiếu trong tin nhắn.
+    # Mặc định CHỈ trả giá + % thay đổi lấy trực tiếp từ DNSE (nhanh, không
+    # qua Gemini, không phân tích). CHỈ chạy pipeline phân tích đầy đủ (kỹ
+    # thuật/dòng tiền/ngành/BCTC/tin tức + Gemini diễn giải) khi tin nhắn có
+    # từ ngữ thể hiện rõ người dùng đang YÊU CẦU PHÂN TÍCH - xem
+    # stock_analysis.wants_full_analysis(). Tránh gọi Gemini/phân tích nặng
+    # cho mỗi câu hỏi giá đơn thuần.
     symbols = await stock_analysis.find_valid_symbols(text)
     if symbols:
-        prompt_id = await db.save_prompt(user_id, "stock_analysis", ",".join(symbols))
-        try:
-            for symbol in symbols:
-                status = await update.message.reply_text(f"🔍 Đang phân tích {symbol}, chờ em chút...")
-                result_text = await stock_analysis.analyze_symbol(symbol)
-                await db.save_result(prompt_id, "stock_analysis", content_text=result_text)
-                await status.delete()
-                await _reply_long_text(update.message, result_text)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Lỗi phân tích cổ phiếu")
-            await _record_failure(prompt_id, "stock_analysis", e)
-            await update.message.reply_text(
-                "❌ Có lỗi khi phân tích cổ phiếu. Hãy thử lại sau giây lát."
-            )
+        if stock_analysis.wants_full_analysis(text):
+            prompt_id = await db.save_prompt(user_id, "stock_analysis", ",".join(symbols))
+            try:
+                for symbol in symbols:
+                    status = await update.message.reply_text(f"🔍 Đang phân tích {symbol}, chờ em chút...")
+                    result_text = await stock_analysis.analyze_symbol(symbol)
+                    await db.save_result(prompt_id, "stock_analysis", content_text=result_text)
+                    await status.delete()
+                    await _reply_long_text(update.message, result_text)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Lỗi phân tích cổ phiếu")
+                await _record_failure(prompt_id, "stock_analysis", e)
+                await update.message.reply_text(
+                    "❌ Có lỗi khi phân tích cổ phiếu. Hãy thử lại sau giây lát."
+                )
+        else:
+            prompt_id = await db.save_prompt(user_id, "stock_price", ",".join(symbols))
+            try:
+                for symbol in symbols:
+                    quote_text = await stock_analysis.quick_quote(symbol)
+                    await db.save_result(prompt_id, "stock_price", content_text=quote_text)
+                    await update.message.reply_text(quote_text)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Lỗi lấy giá cổ phiếu")
+                await _record_failure(prompt_id, "stock_price", e)
+                await update.message.reply_text(
+                    "❌ Có lỗi khi lấy giá cổ phiếu. Hãy thử lại sau giây lát."
+                )
         return
 
     prompt_id = await db.save_prompt(user_id, "chat", text)
@@ -478,45 +398,6 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await _safe_delete(full_path)
             return
 
-        if response.videos:
-            for i, video in enumerate(response.videos):
-                filename = f"chat_{prompt_id}_{i}.mp4"
-                try:
-                    await _save_video_with_timeout(video, str(config.MEDIA_DIR), filename)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "video.save() (chat) vượt quá %ss (vẫn HTTP 206).",
-                        VIDEO_SAVE_TIMEOUT_SEC,
-                    )
-                    await db.save_result(
-                        prompt_id, "video",
-                        content_text=f"Timeout sau {VIDEO_SAVE_TIMEOUT_SEC}s chờ Gemini render video",
-                    )
-                    await update.message.reply_text(
-                        "⏱️ Gemini render video quá lâu nên mình dừng lại, thử lại với mô tả "
-                        "ngắn hơn hoặc dùng /video nhé."
-                    )
-                    continue
-                full_path = config.MEDIA_DIR / filename
-                size_mb = full_path.stat().st_size / (1024 * 1024)
-                if size_mb > TELEGRAM_VIDEO_SIZE_LIMIT_MB:
-                    await db.save_result(
-                        prompt_id, "video",
-                        content_text=f"video {size_mb:.1f}MB vượt giới hạn {TELEGRAM_VIDEO_SIZE_LIMIT_MB}MB",
-                    )
-                    await update.message.reply_text(
-                        f"Video nặng {size_mb:.1f}MB, vượt giới hạn gửi qua bot Telegram "
-                        f"({TELEGRAM_VIDEO_SIZE_LIMIT_MB}MB)."
-                    )
-                else:
-                    video_bytes = await _read_file_bytes(full_path)
-                    caption = reply_text[:TELEGRAM_CAPTION_MAX] if i == 0 and reply_text else None
-                    await update.message.reply_video(video=video_bytes, caption=caption)
-                    await db.save_result(prompt_id, "video", file_path=str(full_path))
-                    await _forward_to_gallery(context, video_path=full_path, caption=text)
-                await _safe_delete(full_path)
-            return
-
         # Không có media -> trả lời bằng text như chat bình thường.
         await db.save_result(prompt_id, "chat", content_text=reply_text or "(không có nội dung)")
         await _reply_long_text(
@@ -533,7 +414,7 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @restricted
 async def reset_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/reset - xoá ngữ cảnh chat tự nhiên hiện tại, bắt đầu hội thoại mới
-    (không ảnh hưởng /anh /video /content vì các lệnh đó luôn single-turn)."""
+    (không ảnh hưởng /anh vì lệnh đó luôn single-turn)."""
     await gemini_client.reset_chat()
     await update.message.reply_text("🔄 Đã xoá ngữ cảnh hội thoại. Bắt đầu chat mới nhé!")
 
@@ -631,34 +512,6 @@ async def photo_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /content - viết content Facebook
-# ---------------------------------------------------------------------------
-@restricted
-async def content_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    topic = _extract_arg(context)
-    if not topic:
-        return await update.message.reply_text("Cú pháp: /content <chủ đề>")
-    user_id = update.effective_user.id
-    prompt_id = await db.save_prompt(user_id, "content", topic)
-    status = await update.message.reply_text("✍️ Đang viết content...")
-    try:
-        full_prompt = (
-            f"Viết một bài đăng Facebook hấp dẫn, giọng văn tự nhiên, gần gũi, "
-            f"về chủ đề: {topic}. Độ dài khoảng 150-250 từ, có thể kèm vài emoji "
-            f"phù hợp, kết thúc bằng 1 câu hỏi để tương tác với người đọc."
-        )
-        response = await gemini_client.ask(full_prompt)
-        text = response.text or "(không có nội dung trả về)"
-        await db.save_result(prompt_id, "content", content_text=text)
-        await status.delete()
-        await _reply_long_text(update.message, text)
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Lỗi tạo content")
-        await _record_failure(prompt_id, "content", e)
-        await status.edit_text("❌ Có lỗi khi tạo content. Hãy thử lại sau giây lát.")
-
-
-# ---------------------------------------------------------------------------
 # /history
 # ---------------------------------------------------------------------------
 @restricted
@@ -667,7 +520,7 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     rows = await db.get_history(user_id, limit=HISTORY_LIMIT)
     if not rows:
         return await update.message.reply_text("Chưa có lịch sử nào.")
-    icon_map = {"image": "🖼️", "video": "🎬", "content": "📝", "chat": "💬", "promptify": "🔍", "stock_analysis": "📊"}
+    icon_map = {"image": "🖼️", "chat": "💬", "promptify": "🔍", "stock_analysis": "📊", "stock_price": "💹"}
     lines = [f"🕘 <b>{HISTORY_LIMIT} lượt gần nhất:</b>\n"]
     for command_type, prompt, created_at, _result_types in rows:
         short_prompt = (
