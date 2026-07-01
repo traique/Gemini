@@ -123,11 +123,17 @@ def format_quote_message(q: providers.Quote) -> str:
     else:
         arrow = "⚪"
         sign = ""
+    if q.is_realtime:
+        time_note = f"khớp lệnh realtime lúc {datetime.now(_VN_TZ).strftime('%H:%M ngày %d/%m/%Y')} giờ VN"
+    else:
+        time_note = (
+            f"giá đóng cửa phiên gần nhất ({q.date})" if q.date
+            else "giá đóng cửa phiên gần nhất"
+        )
     return (
-        f"📊 {q.symbol}: {_fmt_price(q.price)} VND\n"
+        f"📊 {q.symbol}: {_fmt_price(q.price)} VND ({time_note})\n"
         f"{arrow} {sign}{_fmt_price(q.change)} ({sign}{q.change_pct}%) so với phiên trước "
         f"({_fmt_price(q.prev_close)} VND)"
-        + (f" — phiên {q.date}" if q.date else "")
     )
 
 
