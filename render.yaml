@@ -31,3 +31,6 @@ services:
         sync: false
       - key: WEBHOOK_SECRET
         sync: false
+      - key: GEMINI_PROXY
+        sync: false  # Optional - chỉ cần điền nếu Gemini báo tính năng tạo
+                      # ảnh/video không khả dụng theo vị trí (xem config.py)
