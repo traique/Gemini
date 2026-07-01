@@ -91,6 +91,55 @@ async def find_valid_symbols(text: str, limit: int = 3) -> list[str]:
     return valid[:limit]
 
 
+# ─── Phân biệt "hỏi giá" (chỉ cần số liệu DNSE) vs "yêu cầu phân tích" ───────
+# Mặc định khi nhắc tới 1 mã CK trong chat, chỉ trả giá + % thay đổi (nhanh,
+# không tốn lượt gọi Gemini). CHỈ chạy pipeline phân tích đầy đủ (kỹ thuật +
+# dòng tiền + ngành + BCTC + tin tức + Gemini diễn giải) khi người dùng dùng
+# từ ngữ thể hiện rõ ràng muốn PHÂN TÍCH, không chỉ tra giá.
+ANALYSIS_KEYWORDS = [
+    "phân tích", "phan tich", "kỹ thuật", "ky thuat", "cơ bản", "co ban",
+    "đánh giá", "danh gia", "nhận định", "nhan dinh", "khuyến nghị",
+    "khuyen nghi", "tư vấn", "tu van", "nên mua", "nen mua", "nên bán",
+    "nen ban", "có nên", "co nen", "triển vọng", "trien vong", "review",
+    "so sánh", "so sanh", "dự báo", "du bao", "xu hướng", "xu huong",
+    "định giá", "dinh gia", "dòng tiền", "dong tien",
+]
+
+
+def wants_full_analysis(text: str) -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in ANALYSIS_KEYWORDS)
+
+
+def format_quote_message(q: providers.Quote) -> str:
+    """Định dạng tin nhắn tra giá nhanh (KHÔNG phân tích) - toàn số liệu lấy
+    trực tiếp từ DNSE, không qua Gemini."""
+    if q.change > 0:
+        arrow = "🟢▲"
+        sign = "+"
+    elif q.change < 0:
+        arrow = "🔴▼"
+        sign = ""
+    else:
+        arrow = "⚪"
+        sign = ""
+    return (
+        f"📊 {q.symbol}: {_fmt_price(q.price)} VND\n"
+        f"{arrow} {sign}{_fmt_price(q.change)} ({sign}{q.change_pct}%) so với phiên trước "
+        f"({_fmt_price(q.prev_close)} VND)"
+        + (f" — phiên {q.date}" if q.date else "")
+    )
+
+
+async def quick_quote(symbol: str) -> str:
+    """Trả về text tra giá nhanh cho 1 mã, gọi trực tiếp DNSE, không dùng Gemini."""
+    symbol = symbol.strip().upper()
+    q = await providers.fetch_quote(symbol)
+    if q is None:
+        return f"Em không lấy được giá {symbol} lúc này, anh thử lại sau ít phút nhé."
+    return format_quote_message(q)
+
+
 # ─── Score tổng hợp (port scoreSignal() từ route.ts) ─────────────────────────
 
 def _score_signal(stats: ind.SignalStats, has_news: bool) -> float:
