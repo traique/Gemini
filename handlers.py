@@ -46,20 +46,19 @@ VIDEO_SAVE_TIMEOUT_SEC = 240  # 4 phút - rộng hơn nhiều mức "1-2 phút" 
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
     "💬 Gõ tin nhắn bình thường để *chat tự nhiên* với Gemini (không cần "
-    "lệnh /). Gemini sẽ tự quyết định trả lời text, vẽ ảnh hay tạo video "
-    "tuỳ nội dung bạn nhắn, và nhớ được ngữ cảnh các lượt trước.\n\n"
-    "/anh <mô tả> — ép tạo ảnh (single-turn, có tự thử lại nếu Gemini báo "
-    "hết giới hạn)\n"
+    "lệnh /). Gemini sẽ tự quyết định trả lời text hay tạo video tuỳ nội "
+    "dung bạn nhắn, và nhớ được ngữ cảnh các lượt trước.\n\n"
+    "🖼️ *Gửi 1 ảnh bất kỳ* (kèm caption nếu muốn định hướng thêm) để "
+    "Gemini phân tích và viết lại thành 1 prompt tiếng Anh — copy prompt đó "
+    "sang app Gemini để tự tạo ảnh.\n\n"
     "/video <mô tả> — ép tạo video ngắn\n"
     "/content <chủ đề> — viết content Facebook\n"
     "/reset — xoá ngữ cảnh chat tự nhiên, bắt đầu hội thoại mới\n"
     "/history — xem 10 lượt gần nhất\n"
     "/help — hiển thị hướng dẫn này\n\n"
     "*Ví dụ chat tự nhiên:*\n"
-    "Vẽ giúp tôi một chú mèo anime đang uống trà sữa\n"
     "Hôm nay Sài Gòn có mưa không?\n\n"
     "*Ví dụ dùng lệnh /:*\n"
-    "/anh Một chú mèo anime dễ thương đang uống trà sữa\n"
     "/video Hoàng hôn trên biển Đà Nẵng\n"
     "/content Review quán cafe ở Sài Gòn"
 )
@@ -482,6 +481,81 @@ async def reset_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ---------------------------------------------------------------------------
+# Gửi ảnh -> Gemini phân tích và viết lại thành prompt tạo ảnh
+# ---------------------------------------------------------------------------
+IMAGE_ANALYZE_INSTRUCTION_BASE = (
+    "You are an expert prompt engineer for AI image generation tools "
+    "(Midjourney, DALL-E, Gemini's own image generation, etc). "
+    "Look carefully at the attached image and write ONE detailed, ready-to-use "
+    "English prompt that could recreate a very similar image with an AI image "
+    "generator. Describe: subject, pose/action, composition, setting/background, "
+    "lighting, color palette, art style or photography style, camera angle, and "
+    "any notable details or mood. "
+    "Output ONLY the prompt itself as plain text (no markdown, no quotes, no "
+    "preamble like 'Here is the prompt:', no explanation before or after)."
+)
+
+@restricted
+async def photo_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Bất kỳ ảnh nào gửi vào bot đều tự động được phân tích và viết lại thành
+    1 prompt tiếng Anh để bạn copy sang app Gemini tự tạo ảnh - THAY vì bot
+    tự tạo ảnh (tính năng tạo ảnh qua gemini-webapi đang bị chặn theo vị trí
+    server, xem config.py). Phân tích ảnh (vision) là tính năng khác, không
+    bị ảnh hưởng bởi hạn chế đó nên chạy bình thường không cần proxy/VPS.
+
+    Nếu ảnh có caption, caption đó được coi là yêu cầu/định hướng thêm của
+    bạn (vd "chỉ giữ lại phong cách, đổi nhân vật thành mèo") và được nối
+    thêm vào instruction gửi cho Gemini.
+    """
+    user_id = update.effective_user.id
+    caption = (update.message.caption or "").strip()
+    prompt_label = caption or "(gửi ảnh, không có caption)"
+    prompt_id = await db.save_prompt(user_id, "promptify", prompt_label)
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    # Lấy bản ảnh độ phân giải cao nhất Telegram cung cấp (photo là list các
+    # size khác nhau, phần tử cuối luôn là size lớn nhất).
+    tg_photo = update.message.photo[-1]
+    tg_file = await tg_photo.get_file()
+
+    filename = f"promptify_{prompt_id}.jpg"
+    local_path = config.MEDIA_DIR / filename
+    await tg_file.download_to_drive(custom_path=str(local_path))
+
+    instruction = IMAGE_ANALYZE_INSTRUCTION_BASE
+    if caption:
+        instruction += f"\n\nAdditional user instruction: {caption}"
+
+    try:
+        response = await gemini_client.analyze_image(instruction, str(local_path))
+        result_text = (response.text or "").strip()
+
+        if not result_text:
+            await db.save_result(prompt_id, "promptify", content_text="(Gemini không trả về nội dung)")
+            await update.message.reply_text(
+                "Gemini không trả về nội dung phân tích. Thử gửi lại ảnh hoặc ảnh khác nhé."
+            )
+            return
+
+        await db.save_result(prompt_id, "promptify", content_text=result_text)
+        # Bọc trong code block để bạn copy nguyên văn dễ dàng trên Telegram.
+        await update.message.reply_text(
+            f"📝 *Prompt gợi ý (dùng cho app Gemini):*\n\n```\n{result_text}\n```",
+            parse_mode="Markdown",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Lỗi phân tích ảnh")
+        await _record_failure(prompt_id, "promptify", e)
+        await update.message.reply_text(
+            "❌ Có lỗi khi phân tích ảnh. Hãy thử lại sau giây lát."
+        )
+    finally:
+        await _safe_delete(local_path)
+
+
+# ---------------------------------------------------------------------------
 # /content - viết content Facebook
 # ---------------------------------------------------------------------------
 @restricted
@@ -518,7 +592,7 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     rows = await db.get_history(user_id, limit=HISTORY_LIMIT)
     if not rows:
         return await update.message.reply_text("Chưa có lịch sử nào.")
-    icon_map = {"image": "🖼️", "video": "🎬", "content": "📝", "chat": "💬"}
+    icon_map = {"image": "🖼️", "video": "🎬", "content": "📝", "chat": "💬", "promptify": "🔍"}
     lines = [f"🕘 <b>{HISTORY_LIMIT} lượt gần nhất:</b>\n"]
     for command_type, prompt, created_at, _result_types in rows:
         short_prompt = (
