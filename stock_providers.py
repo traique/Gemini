@@ -3,7 +3,14 @@ Lấy dữ liệu thị trường chứng khoán Việt Nam - port từ repo sto
 (src/lib/server/providers/dnse-realtime.ts, vci-chart.ts, ai/news.ts).
 
 Tất cả nguồn dùng ở đây đều CÔNG KHAI, KHÔNG CẦN API KEY:
-- DNSE Entrade (services.entrade.com.vn) - giá + lịch sử OHLCV, đủ HOSE/HNX/UPCOM/VNINDEX.
+- DNSE chart-api (services.entrade.com.vn) - lịch sử OHLCV theo NGÀY, dùng
+  cho phân tích kỹ thuật (trend, MA, RSI...) - KHÔNG phải giá tức thời, đây
+  là nến ngày (có thể là nến ĐANG hình thành nếu đang trong phiên, nhưng độ
+  trễ không đảm bảo).
+- DNSE price-api (api.dnse.com.vn) - GraphQL "GetKrxTicksBySymbols", trả về
+  giá KHỚP LỆNH GẦN NHẤT (tick thật, cập nhật liên tục trong phiên) - dùng
+  cho các câu hỏi tra giá đơn thuần cần số liệu REALTIME. Chỉ áp dụng cho cổ
+  phiếu, không áp dụng cho chỉ số (VNINDEX/VN30...).
 - Google News RSS - tin tức theo mã.
 
 Không dùng VCI Edge / Supabase / SSI như bản gốc vì những nguồn đó cần hạ tầng
@@ -13,15 +20,21 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 DNSE_OHLC_BASE = "https://services.entrade.com.vn/chart-api/v2/ohlcs"
+DNSE_TICK_API = "https://api.dnse.com.vn/price-api/query"
 PRICE_SCALE = 1000  # DNSE trả giá theo NGHÌN VND cho cổ phiếu -> x1000 = VND thô
 REQUEST_TIMEOUT = 8.0
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 )
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+# Số ngày tối đa lùi lại khi tìm tick gần nhất (cuối tuần/lễ không có tick
+# hôm nay) - chặn trần để không lặp vô hạn nếu API không có dữ liệu.
+TICK_LOOKBACK_MAX_DAYS = 10
 
 _INDEX_SYMBOLS = {"VNINDEX", "VN30", "HNXINDEX", "HNX30", "UPCOMINDEX", "UPINDEX"}
 
@@ -133,24 +146,102 @@ class Quote:
     change: float
     change_pct: float
     date: str
+    is_realtime: bool = False
+
+
+async def fetch_realtime_tick(symbol: str) -> float | None:
+    """Giá KHỚP LỆNH GẦN NHẤT (tick thật, cập nhật liên tục trong phiên) qua
+    GraphQL API công khai của DNSE (api.dnse.com.vn/price-api) - KHÔNG cần
+    đăng nhập. Khác hẳn fetch_ohlcv() (nến NGÀY, dùng cho phân tích kỹ
+    thuật): đây là tick khớp lệnh thật sự gần nhất, đúng nghĩa "giá realtime".
+
+    Chỉ áp dụng cho CỔ PHIẾU (board=2, khớp lệnh KRX), KHÔNG áp dụng cho chỉ
+    số (VNINDEX/VN30...) - trả None cho các mã đó, caller tự fallback về giá
+    đóng cửa gần nhất (fetch_ohlcv).
+
+    Nếu hôm nay chưa có tick nào (ngoài giờ giao dịch/cuối tuần/lễ), tự lùi
+    lại tối đa TICK_LOOKBACK_MAX_DAYS ngày để lấy tick khớp lệnh gần nhất
+    trước đó, giống cách 1 app tham khảo cùng dùng API này đã làm.
+    """
+    sym = symbol.strip().upper()
+    if is_index_symbol(sym):
+        return None
+
+    date = datetime.now(_VN_TZ)
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            for _ in range(TICK_LOOKBACK_MAX_DAYS):
+                day_str = date.strftime("%Y-%m-%d")
+                query = (
+                    "query GetKrxTicksBySymbols {GetKrxTicksBySymbols("
+                    f'symbols: "{sym}", date: "{day_str}", limit: 1, board: 2'
+                    ") {ticks {matchPrice}}}"
+                )
+                res = await client.post(
+                    DNSE_TICK_API,
+                    json={"operationName": "GetKrxTicksBySymbols", "query": query},
+                    headers={"Content-Type": "application/json"},
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    ticks = (
+                        (data.get("data") or {})
+                        .get("GetKrxTicksBySymbols", {})
+                        .get("ticks", [])
+                    )
+                    if ticks:
+                        match_price = ticks[0].get("matchPrice")
+                        if match_price:
+                            return round(float(match_price) * PRICE_SCALE)
+                date -= timedelta(days=1)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("fetch_realtime_tick(%s) lỗi: %s", sym, e)
+        return None
+    return None
 
 
 async def fetch_quote(symbol: str) -> Quote | None:
-    """Giá gần nhất + thay đổi so với phiên liền trước - dùng riêng cho các câu
-    hỏi tra giá đơn thuần (KHÔNG phân tích). Chỉ lấy 5 phiên gần nhất (đủ để
-    tính chênh lệch phiên-phiên), nhẹ hơn nhiều so với fetch_ohlcv(90 ngày)
-    vốn dùng cho phân tích kỹ thuật đầy đủ ở stock_analysis.py."""
-    series = await fetch_ohlcv(symbol, days=5)
+    """Giá GẦN NHẤT (ưu tiên tick khớp lệnh REALTIME qua fetch_realtime_tick,
+    fallback về giá đóng cửa phiên gần nhất nếu không lấy được tick - vd
+    ngoài giờ giao dịch, mã là chỉ số, hoặc API tick lỗi) + thay đổi so với
+    giá đóng cửa phiên liền trước. Dùng riêng cho các câu hỏi tra giá đơn
+    thuần (KHÔNG phân tích)."""
+    sym = symbol.strip().upper()
+    series = await fetch_ohlcv(sym, days=5)
     if not series.closes:
         return None
-    price = series.closes[-1]
-    prev_close = series.closes[-2] if len(series.closes) >= 2 else price
+
+    realtime_price = await fetch_realtime_tick(sym)
+    is_realtime = realtime_price is not None
+    today_str = datetime.now(_VN_TZ).strftime("%Y-%m-%d")
+
+    if is_realtime:
+        price = realtime_price
+        date = today_str
+        # prev_close = giá đóng cửa của phiên HOÀN CHỈNH gần nhất trước tick
+        # này. Nếu nến ngày hôm nay đã có trong dữ liệu (đang hình thành
+        # trong phiên), phiên trước là nến áp chót; nếu dữ liệu ngày chưa
+        # kịp cập nhật tới hôm nay, nến cuối cùng trong dãy CHÍNH LÀ phiên
+        # trước.
+        if series.dates and series.dates[-1] == today_str and len(series.closes) >= 2:
+            prev_close = series.closes[-2]
+        else:
+            prev_close = series.closes[-1]
+    else:
+        # Không lấy được tick realtime (ngoài giờ giao dịch/mã là chỉ
+        # số/API lỗi) -> dùng nến ngày gần nhất làm giá hiển thị, phiên
+        # TRƯỚC nó luôn là nến áp chót trong dãy.
+        price = series.closes[-1]
+        date = series.dates[-1] if series.dates else ""
+        prev_close = series.closes[-2] if len(series.closes) >= 2 else price
+
     change = round(price - prev_close, 2)
     change_pct = round((change / prev_close) * 100, 2) if prev_close else 0.0
-    date = series.dates[-1] if series.dates else ""
     return Quote(
-        symbol=symbol, price=price, prev_close=prev_close,
-        change=change, change_pct=change_pct, date=date,
+        symbol=sym, price=price, prev_close=prev_close,
+        change=change, change_pct=change_pct, date=date, is_realtime=is_realtime,
     )
 
 
