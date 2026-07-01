@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Constants (trước đây là magic numbers rải rác trong code)
 # ---------------------------------------------------------------------------
 TELEGRAM_CAPTION_MAX = 1024          # giới hạn caption ảnh/video của Telegram
+TELEGRAM_TEXT_MAX = 4096             # giới hạn tin nhắn text của Telegram
 TELEGRAM_VIDEO_SIZE_LIMIT_MB = 49    # giới hạn gửi video qua bot Telegram (~50MB)
 GEMINI_TEXT_PREVIEW_MAX = 800        # độ dài preview text khi Gemini không trả media
 HISTORY_PROMPT_PREVIEW_MAX = 60      # độ dài rút gọn prompt hiển thị trong /history
@@ -45,9 +46,11 @@ VIDEO_SAVE_TIMEOUT_SEC = 240  # 4 phút - rộng hơn nhiều mức "1-2 phút" 
 
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
-    "💬 Gõ tin nhắn bình thường để hỏi về *chứng khoán Việt Nam* (giá, phân "
-    "tích kỹ thuật/cơ bản, tin tức...) — bot chỉ trả lời trong phạm vi này, "
-    "theo múi giờ Việt Nam.\n\n"
+    "💬 Gõ tin nhắn bình thường để trò chuyện với em - Lan Anh - như trợ lý "
+    "cá nhân của anh, chuyện gì cũng nói chuyện được hết á. Khi nào anh hỏi "
+    "về *chứng khoán Việt Nam* (giá, phân tích kỹ thuật/cơ bản, tin tức...) "
+    "em sẽ tự chuyển sang chế độ phân tích nghiêm túc, theo múi giờ Việt "
+    "Nam.\n\n"
     "🖼️ *Gửi 1 ảnh chân dung* (kèm caption nếu muốn định hướng thêm về bối "
     "cảnh/trang phục) để Gemini viết lại thành 1 prompt \"identity-lock\" "
     "tiếng Anh — dùng prompt đó CÙNG với ảnh gốc trên app Gemini để tạo ảnh "
@@ -58,6 +61,7 @@ HELP_TEXT = (
     "/history — xem 10 lượt gần nhất\n"
     "/help — hiển thị hướng dẫn này\n\n"
     "*Ví dụ chat:*\n"
+    "Hôm nay anh mệt quá em ơi\n"
     "Giá cổ phiếu FPT hôm nay bao nhiêu?\n"
     "Phân tích kỹ thuật của HPG gần đây thế nào?"
 )
@@ -127,6 +131,32 @@ async def _safe_delete(path) -> None:
         pass
 
 
+async def _reply_long_text(message, text: str) -> None:
+    """Gửi `text` bằng reply_text, tự động chia thành nhiều tin nhắn nếu vượt
+    quá TELEGRAM_TEXT_MAX (4096 ký tự) - đây là giới hạn CỨNG của Telegram
+    Bot API cho 1 tin nhắn text. Trước đây gọi thẳng reply_text(text) nên
+    Gemini trả lời càng dài (hay gặp ở /content hoặc chat phân tích cổ
+    phiếu) càng dễ vượt giới hạn này và Telegram trả lỗi "Message is too
+    long", khiến người dùng không nhận được phản hồi gì dù Gemini đã trả
+    lời thành công.
+
+    Cắt tại ranh giới xuống dòng gần nhất trong giới hạn (hoặc khoảng trắng
+    nếu không có xuống dòng) để không cắt ngang giữa từ/câu.
+    """
+    remaining = text
+    while remaining:
+        if len(remaining) <= TELEGRAM_TEXT_MAX:
+            chunk, remaining = remaining, ""
+        else:
+            split_at = remaining.rfind("\n", 0, TELEGRAM_TEXT_MAX)
+            if split_at <= 0:
+                split_at = remaining.rfind(" ", 0, TELEGRAM_TEXT_MAX)
+            if split_at <= 0:
+                split_at = TELEGRAM_TEXT_MAX
+            chunk, remaining = remaining[:split_at], remaining[split_at:].lstrip()
+        await message.reply_text(chunk)
+
+
 async def _forward_to_gallery(
     context: ContextTypes.DEFAULT_TYPE,
     photo_path=None,
@@ -179,11 +209,13 @@ async def _record_failure(prompt_id: int, result_type: str, error: Exception) ->
 @restricted
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Xin chào! Mình là trợ lý chứng khoán Việt Nam, kèm tính năng viết "
-        "prompt tạo ảnh giữ nguyên khuôn mặt từ ảnh bạn gửi.\n"
-        "Cứ gõ câu hỏi về cổ phiếu/thị trường để chat, hoặc gửi 1 tấm ảnh "
-        "để mình viết prompt.\n"
-        "Gõ /help để xem các lệnh đầy đủ."
+        "Chào anh, em là Lan Anh, trợ lý cá nhân của anh nè! 💕\n"
+        "Anh cứ nhắn chuyện gì cũng được, em nói chuyện với anh bình thường. "
+        "Khi nào anh hỏi về cổ phiếu/thị trường Việt Nam, em sẽ tự chuyển "
+        "sang phân tích nghiêm túc cho anh.\n"
+        "Anh cũng có thể gửi 1 tấm ảnh để em viết prompt tạo ảnh giữ nguyên "
+        "khuôn mặt.\n"
+        "Gõ /help để xem các lệnh đầy đủ nha anh."
     )
 
 
@@ -464,7 +496,9 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         # Không có media -> trả lời bằng text như chat bình thường.
         await db.save_result(prompt_id, "chat", content_text=reply_text or "(không có nội dung)")
-        await update.message.reply_text(reply_text or "Gemini không phản hồi gì, thử lại nhé.")
+        await _reply_long_text(
+            update.message, reply_text or "Gemini không phản hồi gì, thử lại nhé."
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("Lỗi chat tự nhiên")
         await _record_failure(prompt_id, "chat", e)
@@ -594,7 +628,7 @@ async def content_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = response.text or "(không có nội dung trả về)"
         await db.save_result(prompt_id, "content", content_text=text)
         await status.delete()
-        await update.message.reply_text(text)
+        await _reply_long_text(update.message, text)
     except Exception as e:  # noqa: BLE001
         logger.exception("Lỗi tạo content")
         await _record_failure(prompt_id, "content", e)
