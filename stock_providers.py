@@ -125,6 +125,35 @@ async def verify_symbol_exists(symbol: str) -> bool:
     return price > 0
 
 
+@dataclass
+class Quote:
+    symbol: str
+    price: float
+    prev_close: float
+    change: float
+    change_pct: float
+    date: str
+
+
+async def fetch_quote(symbol: str) -> Quote | None:
+    """Giá gần nhất + thay đổi so với phiên liền trước - dùng riêng cho các câu
+    hỏi tra giá đơn thuần (KHÔNG phân tích). Chỉ lấy 5 phiên gần nhất (đủ để
+    tính chênh lệch phiên-phiên), nhẹ hơn nhiều so với fetch_ohlcv(90 ngày)
+    vốn dùng cho phân tích kỹ thuật đầy đủ ở stock_analysis.py."""
+    series = await fetch_ohlcv(symbol, days=5)
+    if not series.closes:
+        return None
+    price = series.closes[-1]
+    prev_close = series.closes[-2] if len(series.closes) >= 2 else price
+    change = round(price - prev_close, 2)
+    change_pct = round((change / prev_close) * 100, 2) if prev_close else 0.0
+    date = series.dates[-1] if series.dates else ""
+    return Quote(
+        symbol=symbol, price=price, prev_close=prev_close,
+        change=change, change_pct=change_pct, date=date,
+    )
+
+
 # ─── Tin tức (Google News RSS) ──────────────────────────────────────────────
 
 NEWS_RECENT_DAYS = 30
