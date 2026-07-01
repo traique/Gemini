@@ -6,12 +6,14 @@ tài khoản Gemini Pro thay vì API key chính thức).
 Không log giá trị này ra console/file log.
 """
 import asyncio
+import hashlib
 import logging
 from typing import Optional
 
 from gemini_webapi import ChatSession, GeminiClient
 
 import config
+import db
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,17 @@ call_lock = asyncio.Lock()
 # (Render free tier ngủ/restart thường xuyên) - đó là giới hạn đã biết,
 # không phải lỗi.
 _chat_session: Optional[ChatSession] = None
+
+# Keys trong bảng settings (xem db.py) để persist Gem id của chat tự nhiên
+# qua các lần restart, tránh tạo Gem trùng lặp trên tài khoản Gemini.
+_SETTING_GEM_ID = "chat_gem_id"
+_SETTING_GEM_SKILL_HASH = "chat_gem_skill_hash"
+
+# Hash nội dung skill đã dùng để tạo _chat_session hiện tại (trong RAM) -
+# giúp phát hiện skill vừa bị đổi (chat_skill.txt sửa) MÀ CHƯA restart
+# process, để tự tạo lại session với Gem mới ngay lần chat kế tiếp thay vì
+# phải đợi deploy lại mới nhận skill mới.
+_chat_session_skill_hash: Optional[str] = None
 
 
 async def get_client() -> GeminiClient:
@@ -124,6 +137,53 @@ async def reset_client() -> None:
         _chat_session = None
 
 
+async def _get_or_create_chat_gem() -> tuple[Optional[str], str]:
+    """
+    Đảm bảo có 1 Gem (system prompt) trên tài khoản Gemini khớp với nội dung
+    hiện tại của chat_skill.txt, và trả về (gem_id, skill_hash).
+
+    - Nếu chat_skill.txt rỗng/không tồn tại -> trả (None, "") -> chat() sẽ
+      không gắn Gem, hoạt động như chat thường không giới hạn phạm vi.
+    - Nếu đã có gem_id lưu trong DB và hash khớp nội dung file hiện tại ->
+      dùng lại gem_id đó (không gọi thêm request nào lên Gemini).
+    - Nếu hash lệch (skill vừa được sửa) hoặc chưa từng tạo -> tạo/update
+      Gem trên Gemini rồi lưu lại gem_id + hash mới vào DB.
+    """
+    skill_text = config.load_chat_skill()
+    if not skill_text:
+        return None, ""
+
+    skill_hash = hashlib.sha256(skill_text.encode("utf-8")).hexdigest()
+
+    stored_gem_id = await db.get_setting(_SETTING_GEM_ID)
+    stored_hash = await db.get_setting(_SETTING_GEM_SKILL_HASH)
+    if stored_gem_id and stored_hash == skill_hash:
+        return stored_gem_id, skill_hash
+
+    client = await get_client()
+    if stored_gem_id:
+        # Skill đã đổi nội dung - update Gem hiện có thay vì tạo Gem mới,
+        # để tránh tích tụ rác trong danh sách Gem trên tài khoản Gemini.
+        logger.info("Nội dung chat_skill.txt đã đổi, cập nhật lại Gem hiện có...")
+        gem = await client.update_gem(
+            stored_gem_id,
+            name="Bot Telegram - Chat Skill",
+            prompt=skill_text,
+            description="Tự động tạo/cập nhật bởi bot Telegram từ chat_skill.txt",
+        )
+    else:
+        logger.info("Chưa có Gem cho chat tự nhiên, tạo mới từ chat_skill.txt...")
+        gem = await client.create_gem(
+            name="Bot Telegram - Chat Skill",
+            prompt=skill_text,
+            description="Tự động tạo/cập nhật bởi bot Telegram từ chat_skill.txt",
+        )
+
+    await db.set_setting(_SETTING_GEM_ID, gem.id)
+    await db.set_setting(_SETTING_GEM_SKILL_HASH, skill_hash)
+    return gem.id, skill_hash
+
+
 async def chat(prompt: str):
     """
     Gửi 1 tin nhắn "chat tự nhiên" (đa lượt) tới Gemini - dùng cho mọi tin
@@ -132,14 +192,25 @@ async def chat(prompt: str):
     /content vì những lệnh đó cần kết quả độc lập, không phụ thuộc lịch sử
     chat).
 
+    Mỗi session được gắn 1 Gem (system prompt) đọc từ chat_skill.txt, để
+    Gemini chỉ trả lời trong phạm vi bạn định nghĩa trước - xem
+    _get_or_create_chat_gem(). Nếu file skill rỗng, chat chạy không giới hạn
+    phạm vi như trước đây.
+
     Cùng cơ chế serialize + retry-1-lần-khi-lỗi như ask().
     """
-    global _chat_session
+    global _chat_session, _chat_session_skill_hash
 
     async with call_lock:
         client = await get_client()
-        if _chat_session is None:
-            _chat_session = client.start_chat()
+        gem_id, skill_hash = await _get_or_create_chat_gem()
+
+        # Tạo lại session nếu: chưa có session, HOẶC skill vừa đổi nội dung
+        # kể từ lần tạo session gần nhất (không cần đợi restart process).
+        if _chat_session is None or _chat_session_skill_hash != skill_hash:
+            _chat_session = client.start_chat(gem=gem_id) if gem_id else client.start_chat()
+            _chat_session_skill_hash = skill_hash
+
         try:
             return await _chat_session.send_message(prompt)
         except Exception:
@@ -149,12 +220,47 @@ async def chat(prompt: str):
             )
             await reset_client()
             client = await get_client()
-            _chat_session = client.start_chat()
+            gem_id, skill_hash = await _get_or_create_chat_gem()
+            _chat_session = client.start_chat(gem=gem_id) if gem_id else client.start_chat()
+            _chat_session_skill_hash = skill_hash
             return await _chat_session.send_message(prompt)
 
 
 async def reset_chat() -> None:
     """Xoá ngữ cảnh chat tự nhiên hiện tại, bắt đầu hội thoại mới (giữ
-    nguyên client/cookie - khác reset_client() là reset cả phiên đăng nhập)."""
-    global _chat_session
+    nguyên client/cookie - khác reset_client() là reset cả phiên đăng nhập).
+    Lần chat kế tiếp sẽ tự kiểm tra lại chat_skill.txt và gắn Gem tương ứng."""
+    global _chat_session, _chat_session_skill_hash
     _chat_session = None
+    _chat_session_skill_hash = None
+
+
+async def analyze_image(instruction: str, image_path: str):
+    """
+    Gửi 1 ảnh (single-turn, KHÔNG dùng chung chat session với chat tự
+    nhiên) kèm instruction tới Gemini để phân tích - dùng cho việc "gửi ảnh
+    -> Gemini viết lại thành prompt tạo ảnh" thay vì tự tạo ảnh (tính năng
+    tạo ảnh của gemini-webapi đang bị chặn theo vị trí server, xem ghi chú
+    trong config.py về GEMINI_PROXY; NHƯNG phân tích ảnh (vision, không tạo
+    ảnh mới) là tính năng khác, không bị ảnh hưởng bởi hạn chế đó).
+
+    image_path: đường dẫn file ảnh THẬT trên đĩa (không dùng bytes thô) -
+    generate_content() của thư viện chỉ giữ đúng tên file + phần mở rộng
+    (quyết định content-type khi upload) khi truyền str/Path; truyền bytes
+    thô sẽ bị đặt tên ngẫu nhiên với đuôi .txt mặc định, khiến Google nhận
+    sai kiểu file.
+
+    Cùng cơ chế serialize + retry-1-lần-khi-lỗi như ask().
+    """
+    async with call_lock:
+        client = await get_client()
+        try:
+            return await client.generate_content(instruction, files=[image_path])
+        except Exception:
+            logger.warning(
+                "Gọi Gemini (analyze_image) lỗi lần 1, reset client và thử lại 1 lần.",
+                exc_info=True,
+            )
+            await reset_client()
+            client = await get_client()
+            return await client.generate_content(instruction, files=[image_path])
