@@ -19,6 +19,17 @@ GEMINI_SECURE_1PSIDTS = os.getenv("GEMINI_SECURE_1PSIDTS", "").strip() or None
 
 GALLERY_CHANNEL_ID = os.getenv("GALLERY_CHANNEL_ID", "").strip() or None
 
+# Optional: proxy cho mọi request tới gemini.google.com (gemini-webapi nhận
+# trực tiếp qua curl_cffi, hỗ trợ http://, https://, socks5://...).
+# Lý do cần: account dùng Cookie lấy từ Việt Nam, nhưng server chạy ở vùng
+# khác (vd Render region) -> Google geo-fence tính năng tạo ảnh theo IP của
+# REQUEST chứ không theo nơi cookie được tạo, dù region host gần VN (như
+# Singapore) cũng có thể không được Google tính là "VN". Khi gặp lỗi kiểu
+# Gemini tự trả lời "có thể tính năng chưa khả dụng ở vị trí của bạn" dù
+# cookie còn mới và tài khoản test trên web (từ mạng VN) vẫn tạo ảnh được
+# bình thường -> set biến này tới 1 proxy có IP exit tại Việt Nam để thử.
+GEMINI_PROXY = os.getenv("GEMINI_PROXY", "").strip() or None
+
 # Supabase Postgres - bền hơn SQLite, không bị mất khi Render free tier
 # ngủ/restart (ổ đĩa local trên Render free là ephemeral).
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -79,4 +90,4 @@ def validate(require_webhook: bool = False) -> None:
             "Thiếu biến môi trường bắt buộc: "
             + ", ".join(missing)
             + "\nXem hướng dẫn trong README.md"
-        )
+)
