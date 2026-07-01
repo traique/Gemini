@@ -59,6 +59,20 @@ async def init_db() -> None:
             )
             """
         )
+        # Bảng key-value chung, hiện dùng để lưu id + hash nội dung của Gem
+        # (system prompt) cho chat tự nhiên - tránh phải tạo lại Gem mới mỗi
+        # khi service Render restart (Render free tier restart khá thường
+        # xuyên, mà mỗi Gem tạo ra sẽ tồn tại vĩnh viễn trong tài khoản
+        # Gemini nếu không dọn, gây rác danh sách Gem của bạn).
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
 
 
 async def save_prompt(telegram_user_id: int, command_type: str, prompt: str) -> int:
@@ -111,6 +125,24 @@ async def get_history(telegram_user_id: int, limit: int = 10):
         (r["command_type"], r["prompt"], r["created_at"].isoformat(), r["result_types"] or "")
         for r in rows
     ]
+
+
+async def get_setting(key: str) -> Optional[str]:
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT value FROM settings WHERE key = $1", key)
+    return row["value"] if row else None
+
+
+async def set_setting(key: str, value: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        """,
+        key,
+        value,
+    )
 
 
 async def close_pool() -> None:
