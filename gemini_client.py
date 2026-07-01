@@ -8,7 +8,9 @@ Không log giá trị này ra console/file log.
 import asyncio
 import hashlib
 import logging
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from gemini_webapi import ChatSession, GeminiClient
 
@@ -16,6 +18,26 @@ import config
 import db
 
 logger = logging.getLogger(__name__)
+
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+_VN_WEEKDAYS = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+
+
+def _now_vn_context() -> str:
+    """Trả về 1 dòng ghi rõ thời điểm hiện tại theo giờ Việt Nam, để chèn vào
+    đầu mỗi tin nhắn chat gửi cho Gemini.
+
+    Lý do cần hàm này: gemini-webapi không có cơ chế nào tự động cho Gemini
+    biết "bây giờ là mấy giờ, ngày nào" - Gemini tự suy luận "hôm nay" theo
+    hệ thống của Google (thường lệch múi giờ VN, ví dụ khung 00h00-06h59
+    giờ VN thì UTC vẫn còn là ngày hôm trước) - đây là nguyên nhân thực tế
+    khiến Gemini trả lời sai ngày dù server host ở region gần VN. Chỉ dặn
+    trong chat_skill.txt "hãy hiểu theo giờ VN" là không đủ, vì đó chỉ là
+    hướng dẫn CÁCH DIỄN GIẢI, Gemini vẫn cần được cho biết thời điểm THẬT.
+    """
+    now = datetime.now(_VN_TZ)
+    weekday = _VN_WEEKDAYS[now.weekday()]
+    return f"[Thời điểm hiện tại: {now:%H:%M} ngày {now:%d/%m/%Y} ({weekday}), giờ Việt Nam]"
 
 _client: Optional[GeminiClient] = None
 _init_lock = asyncio.Lock()
@@ -201,6 +223,10 @@ async def chat(prompt: str):
     """
     global _chat_session, _chat_session_skill_hash
 
+    # Chèn thời điểm hiện tại (giờ VN) vào đầu mỗi tin nhắn - xem
+    # _now_vn_context() để biết lý do cần làm việc này ở MỖI lượt gửi.
+    prompt_with_time = f"{_now_vn_context()}\n{prompt}"
+
     async with call_lock:
         client = await get_client()
         gem_id, skill_hash = await _get_or_create_chat_gem()
@@ -212,7 +238,7 @@ async def chat(prompt: str):
             _chat_session_skill_hash = skill_hash
 
         try:
-            return await _chat_session.send_message(prompt)
+            return await _chat_session.send_message(prompt_with_time)
         except Exception:
             logger.warning(
                 "Gọi Gemini (chat) lỗi lần 1, reset client+session và thử lại 1 lần.",
@@ -223,7 +249,7 @@ async def chat(prompt: str):
             gem_id, skill_hash = await _get_or_create_chat_gem()
             _chat_session = client.start_chat(gem=gem_id) if gem_id else client.start_chat()
             _chat_session_skill_hash = skill_hash
-            return await _chat_session.send_message(prompt)
+            return await _chat_session.send_message(prompt_with_time)
 
 
 async def reset_chat() -> None:
