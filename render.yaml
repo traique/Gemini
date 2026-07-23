@@ -1,0 +1,72 @@
+# Blueprint cho Render - dùng "New +" → "Blueprint" và chọn repo này,
+# Render sẽ tự đọc file này để tạo Web Service đúng cấu hình.
+# Các giá trị "sync: false" cần bạn tự điền trong Render Dashboard
+# (không lưu secret trong file này / trong Git).
+services:
+  - type: web
+    name: gemini-telegram-bot
+    runtime: python
+    region: singapore  # Gần Việt Nam nhất (oregon/ohio/virginia/frankfurt/singapore)
+    plan: free
+    numInstances: 1  # BẮT BUỘC = 1: call_lock (ai/orchestrator.py) và
+                      # GeminiClient singleton (ai/cookie_client.py) chỉ tồn
+                      # tại trong 1 process. Nếu
+                      # service này bị scale ngang lên >1 instance, 2 process
+                      # độc lập sẽ gọi đồng thời lên cùng 1 cookie Google -
+                      # đúng điều assumption "serialize mọi request" muốn tránh.
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn web:api --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: ALLOWED_USER_ID
+        sync: false
+      - key: GEMINI_SECURE_1PSID
+        sync: false
+      - key: GEMINI_SECURE_1PSIDTS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: SETTINGS_ENC_KEY
+        sync: false  # Khuyến nghị bật: tạo bằng
+                      # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+      - key: DIAGNOSE_SECRET
+        sync: false  # Khuyến nghị bật nếu muốn dùng endpoint /diagnose - để
+                      # trống thì endpoint này luôn trả 403 (an toàn hơn).
+      - key: GEMINI_PROXY
+        sync: false  # Optional
+      - key: GOOGLE_AI_STUDIO_API_KEY_1
+        sync: false  # Optional - provider-chain (cookie -> api1 -> api2) khi
+                      # cookie Gemini lỗi, lấy tại https://aistudio.google.com/apikey
+      - key: GOOGLE_AI_STUDIO_API_KEY_2
+        sync: false  # Optional - key thứ 2 (project/tài khoản Google khác) để
+                      # nhân đôi quota free/ngày, dùng khi api1 hết quota (429)
+      - key: GOOGLE_AI_STUDIO_MODEL
+        value: gemini-2.5-flash
+      - key: TELEGRAM_CONNECT_TIMEOUT
+        value: "30"
+      - key: TELEGRAM_READ_TIMEOUT
+        value: "90"
+      - key: TELEGRAM_WRITE_TIMEOUT
+        value: "90"
+      - key: TELEGRAM_POOL_TIMEOUT
+        value: "30"
+      - key: TELEGRAM_MEDIA_RETRIES
+        value: "3"
+      - key: CHAT_HISTORY_TURNS
+        value: "8"
+      - key: CHAT_SESSION_TIMEOUT_SEC
+        value: "21600"
+      - key: COOKIE_PROBE_INTERVAL_SEC
+        value: "900"
+      - key: API_QUOTA_COOLDOWN_SEC
+        value: "3600"
+      - key: GEMINI_COOKIE_REFRESH_INTERVAL
+        value: "540"
+      - key: GEMINI_COOKIE_CALL_TIMEOUT_SEC
+        value: "18"
+      - key: GEMINI_WEBAPI_DEBUG
+        value: "false"

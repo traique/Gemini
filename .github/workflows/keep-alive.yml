@@ -1,0 +1,18 @@
+name: Keep Render awake
+
+on:
+  schedule:
+    # Chạy mỗi 10 phút, lệch phút (7,17,27...) thay vì đúng phút tròn
+    # (0,10,20...) để tránh giờ cao điểm khi hàng loạt repo khác cũng
+    # cron đúng phút tròn - GitHub dễ delay/rớt lịch vào những phút đó.
+    - cron: "7,17,27,37,47,57 * * * *"
+  workflow_dispatch: {}   # cho phép bấm "Run workflow" để test tay
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health check endpoint
+        run: |
+          curl --fail --silent --show-error --max-time 30 \
+            "${{ vars.RENDER_APP_URL }}/"
