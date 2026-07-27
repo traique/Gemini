@@ -1,10 +1,12 @@
 import asyncio
 import html
 import logging
+import re
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -48,6 +50,66 @@ def _get_cached_price(product_name: str) -> str | None:
 
 def _set_cached_price(product_name: str, text: str) -> None:
     _PRICE_CACHE[_normalize_product_key(product_name)] = (time.time(), text)
+
+
+# Verify link thật sự tồn tại thay vì tin lời prompt "bắt buộc trích URL
+# gốc" - vì model vẫn có thể bịa 1 URL "nhìn hợp lý" theo pattern quen
+# thuộc của 1 trang bán lẻ dù URL đó không hề tồn tại.
+_MD_LINK_RE = re.compile(r"\[([^\[\]\n]+)\]\((https?://[^\s()]+)\)")
+_LINK_CHECK_TIMEOUT = 6.0
+
+
+async def _check_url(client: httpx.AsyncClient, url: str) -> bool | None:
+    """True = link sống. False = CHẮC CHẮN hỏng (404/410/không kết nối
+    được). None = không chắc (403 bị chặn bot, timeout, lỗi 5xx tạm thời...)
+    - những trường hợp này KHÔNG gắn cảnh báo để tránh báo nhầm link tốt
+    thành hỏng chỉ vì trang có chặn request tự động."""
+    try:
+        resp = await client.head(url, timeout=_LINK_CHECK_TIMEOUT, follow_redirects=True)
+        if resp.status_code in (403, 405):
+            # Một số trang chặn HEAD hoặc chặn bot mặc định -> thử lại bằng GET.
+            resp = await client.get(url, timeout=_LINK_CHECK_TIMEOUT, follow_redirects=True)
+        if resp.status_code < 400:
+            return True
+        if resp.status_code in (404, 410):
+            return False
+        return None
+    except httpx.ConnectError:
+        # Domain không tồn tại / không kết nối được -> chắc chắn hỏng.
+        return False
+    except Exception:
+        # Timeout hoặc lỗi mạng khác -> không đủ chắc chắn để gắn cảnh báo.
+        return None
+
+
+async def _verify_links(text: str) -> str:
+    matches = list(_MD_LINK_RE.finditer(text))
+    if not matches:
+        return text
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; LanAnhBot/1.0)"}
+        async with httpx.AsyncClient(headers=headers) as client:
+            results = await asyncio.gather(
+                *(_check_url(client, m.group(2)) for m in matches),
+                return_exceptions=False,
+            )
+    except Exception:
+        logger.exception("Lỗi khi verify link giá sản phẩm, giữ nguyên text gốc")
+        return text
+
+    out: list[str] = []
+    last_end = 0
+    for match, is_alive in zip(matches, results):
+        out.append(text[last_end:match.start()])
+        label, url = match.group(1), match.group(2)
+        if is_alive is False:
+            out.append(f"[⚠️ {label} (link có thể đã đổi/hết hàng)]({url})")
+        else:
+            out.append(match.group(0))
+        last_end = match.end()
+    out.append(text[last_end:])
+    return "".join(out)
 
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
@@ -108,6 +170,7 @@ YÊU CẦU QUAN TRỌNG:
 1. So khớp CHÍNH XÁC phiên bản/dung lượng.
 2. BẮT BUỘC phải trích xuất URL (đường link) gốc của trang sản phẩm để người dùng bấm vào xem.
 3. Không tự bịa giá. Nếu hệ thống báo hết hàng hoặc không có giá, hãy ghi chú rõ.
+4. BẮT BUỘC dùng công cụ Google Search TRƯỚC, rồi mới trả lời - không được trả lời dựa trên trí nhớ/kiến thức đã học sẵn của bạn. Kiến thức nội bộ của bạn có thể đã LỖI THỜI (sản phẩm mới ra mắt sau thời điểm bạn được huấn luyện). Nếu kết quả tìm kiếm cho thấy sản phẩm đã có bán/có giá, PHẢI tin theo kết quả tìm kiếm dù điều đó trái với những gì bạn "nhớ". Chỉ được kết luận "chưa ra mắt" hoặc "chưa có giá" khi kết quả tìm kiếm thực sự không tìm thấy thông tin nào về sản phẩm này.
 
 Trình bày kết quả theo ĐÚNG định dạng list (KHÔNG dùng bảng markdown vì Telegram không hiển thị được bảng) và văn phong sau:
 
@@ -215,6 +278,7 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         await telemetry.success(prompt_id, "price_search", result_text)
+        result_text = await _verify_links(result_text)
         _set_cached_price(product_name, result_text)
         suffix = "\n\n⚙️ API" if getattr(response, "used_fallback", False) else ""
 
