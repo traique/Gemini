@@ -5,10 +5,6 @@ import re
 from typing import Optional
 
 _CODE_RE = re.compile(r"`([^`\n]+?)`")
-# [text](url) -> <a href="url">text</a>. Chỉ khớp url http(s) thật (không bắt
-# nhầm các cặp [] () khác của văn bản thường); chạy TRƯỚC bold/italic vì
-# "text" bên trong có thể chứa ** (vd link đã được model in đậm sẵn).
-_LINK_RE = re.compile(r"\[([^\[\]]+?)\]\((https?://[^\s()]+?)\)")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 # *italic* một dấu sao - chạy SAU _BOLD_RE nên không còn cặp ** nào sót lại
 # để bị nuốt nhầm.
@@ -30,8 +26,7 @@ def _escape(text: str) -> str:
 
 
 def _apply_inline_emphasis(segment: str) -> str:
-    """Áp dụng link/bold/italic. KHÔNG gọi trên đoạn đã là <code>...</code>."""
-    segment = _LINK_RE.sub(lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>', segment)
+    """Áp dụng bold/italic. KHÔNG gọi trên đoạn đã là <code>...</code>."""
     segment = _BOLD_RE.sub(lambda m: f"<b>{m.group(1)}</b>", segment)
     segment = _ITALIC_STAR_RE.sub(lambda m: f"<i>{m.group(1)}</i>", segment)
     segment = _ITALIC_RE.sub(lambda m: f"<i>{m.group(1)}</i>", segment)
