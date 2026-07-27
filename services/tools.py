@@ -34,7 +34,6 @@ from zoneinfo import ZoneInfo
 
 from core import database as db
 from ai import official_client
-from services import price_service
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +61,6 @@ Danh sách tool khả dụng:
 - "get_portfolio": xem lại danh mục đầu tư đã ghi nhận trong trí nhớ dài hạn.
   args: {}. Dùng khi người dùng hỏi "danh mục của anh gồm những gì", "em nhớ
   anh đang giữ mã nào không"...
-- "search_price": tìm và so sánh giá 1 SẢN PHẨM TIÊU DÙNG (điện thoại, tivi,
-  laptop, đồ gia dụng, mỹ phẩm...) tại các hệ thống bán lẻ Việt Nam. args:
-  {"product_name": "tên sản phẩm, giữ nguyên phiên bản/dung lượng nếu người
-  dùng có nêu"}. Dùng khi người dùng RÕ RÀNG hỏi giá/so sánh giá 1 món hàng cụ
-  thể (vd "tìm giá iPhone 16 Pro giúp anh", "tivi Samsung 55 inch giá bao
-  nhiêu", "em xem giúp anh máy giặt LG 9kg đang bán giá nào"). TUYỆT ĐỐI
-  KHÔNG dùng cho mã cổ phiếu Việt Nam (đã có fast-path riêng xử lý TRƯỚC khi
-  tới router này, không thuộc phạm vi ở đây) và KHÔNG dùng khi người dùng chỉ
-  nhắc tới sản phẩm mà không thực sự hỏi giá.
 - "none": tin nhắn KHÔNG cần gọi tool nào (chuyện phiếm, hỏi đáp thông
   thường, hỏi giá/phân tích cổ phiếu cụ thể - các trường hợp đó đã được xử
   lý riêng, không thuộc phạm vi router này). args: {}.
@@ -123,29 +113,11 @@ async def _tool_get_portfolio(user_id: int) -> str:
     return "Danh mục đầu tư đã ghi nhận trong trí nhớ:\n" + "\n".join(portfolio_facts)
 
 
-async def _tool_search_price(user_id: int, product_name: str = "") -> str:
-    product_name = (product_name or "").strip()
-    if not product_name:
-        return "Không rõ tên sản phẩm cần tìm giá."
-    try:
-        # Dùng chung pipeline JSON + cache + thứ tự provider ưu tiên API của
-        # /gia (services/price_service.py) - Lan Anh chỉ diễn đạt lại tự
-        # nhiên, KHÔNG được tự viết lại số/link (xem chỉ dẫn ở
-        # handlers/chat_router.py khi chèn grounding này vào orchestrator.chat()).
-        return await price_service.fetch_price_message(product_name)
-    except price_service.PriceServiceError:
-        return f"Không tìm được giá đáng tin cậy cho '{product_name}' lúc này."
-    except Exception:
-        logger.warning("Lỗi tool search_price cho '%s'.", product_name, exc_info=True)
-        return f"Có lỗi khi tra giá '{product_name}', thử lại sau nhé."
-
-
 _HANDLERS = {
     "save_note": _tool_save_note,
     "list_notes": _tool_list_notes,
     "set_reminder": _tool_set_reminder,
     "get_portfolio": _tool_get_portfolio,
-    "search_price": _tool_search_price,
 }
 
 
@@ -181,20 +153,7 @@ async def maybe_run_tool(user_id: int, user_text: str) -> Optional[str]:
         handler = _HANDLERS[tool_name]
         result = await handler(user_id, **args)
         logger.info("Function calling: đã chạy tool '%s' cho user_id=%s", tool_name, user_id)
-
-        extra_instruction = ""
-        if tool_name == "search_price":
-            # Giá/link là dữ liệu đã validate bằng code (price_service) - Lan
-            # Anh chỉ được diễn đạt lại giọng văn, KHÔNG được tự sửa số hay
-            # link (tránh lặp lại lỗi "model tự bịa giá" đã sửa ở Giai đoạn 2).
-            extra_instruction = (
-                " Giữ NGUYÊN VẸN mọi con số, tên shop, và link bên dưới khi trả lời - "
-                "chỉ được diễn đạt lại giọng văn cho tự nhiên, KHÔNG được tự viết lại giá."
-            )
-        return (
-            f"[Kết quả tool '{tool_name}' vừa chạy - dùng thông tin này để trả lời tự nhiên."
-            f"{extra_instruction}]\n{result}"
-        )
+        return f"[Kết quả tool '{tool_name}' vừa chạy - dùng thông tin này để trả lời tự nhiên]\n{result}"
     except Exception:
         logger.warning(
             "Lỗi khi chạy function-calling router (bỏ qua, chat chính vẫn tiếp tục bình thường).",
