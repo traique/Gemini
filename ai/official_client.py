@@ -54,18 +54,11 @@ def now_vn_context() -> str:
 class FallbackResponse:
     """Giả lập interface của ModelOutput (gemini-webapi) cho response từ
     Google AI Studio API chính thức, để handlers/ dùng .text như bình
-    thường mà không cần biết câu trả lời đến từ đâu.
+    thường mà không cần biết câu trả lời đến từ đâu."""
 
-    grounding_sources: [(title, uri), ...] lấy từ
-    response.candidates[0].grounding_metadata.grounding_chunks khi
-    enable_search=True - đây là link THẬT Google Search trả về, khác với
-    link mà model tự viết ra trong .text (dễ bịa). Rỗng nếu không bật
-    search hoặc response không có grounding (vd model không cần tra cứu)."""
-
-    def __init__(self, text: str, grounding_sources: Optional[list[tuple[str, str]]] = None) -> None:
+    def __init__(self, text: str) -> None:
         self.text = text
         self.used_fallback = True
-        self.grounding_sources = grounding_sources or []
 
 
 def is_quota_exhausted_error(exc: BaseException) -> bool:
@@ -86,31 +79,6 @@ def is_quota_exhausted_error(exc: BaseException) -> bool:
     if "429" in msg and ("quota" in msg.lower() or "rate" in msg.lower()):
         return True
     return False
-
-
-def _extract_grounding_sources(response) -> list[tuple[str, str]]:
-    """Trích [(title, uri), ...] từ grounding_metadata.grounding_chunks của
-    response genai (chỉ có khi enable_search=True và model thực sự có tra
-    cứu). Bọc try/except vì đây là cấu trúc SDK có thể đổi/thiếu tuỳ model -
-    lỗi ở đây KHÔNG được làm hỏng cả response chính."""
-    sources: list[tuple[str, str]] = []
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        if not candidates:
-            return sources
-        metadata = getattr(candidates[0], "grounding_metadata", None)
-        chunks = getattr(metadata, "grounding_chunks", None) or []
-        for chunk in chunks:
-            web = getattr(chunk, "web", None)
-            if not web:
-                continue
-            title = getattr(web, "title", "") or ""
-            uri = getattr(web, "uri", "") or ""
-            if uri:
-                sources.append((title, uri))
-    except Exception:
-        logger.warning("Không trích được grounding_sources từ response.", exc_info=True)
-    return sources
 
 
 async def generate(
@@ -166,8 +134,7 @@ async def generate(
         contents=contents,
         config=types.GenerateContentConfig(**cfg_kwargs),
     )
-    grounding_sources = _extract_grounding_sources(response) if enable_search else []
-    return FallbackResponse((response.text or "").strip(), grounding_sources=grounding_sources)
+    return FallbackResponse((response.text or "").strip())
 
 
 async def generate_image_prompt(idx: int, instruction: str, image_path: str) -> FallbackResponse:
@@ -246,93 +213,6 @@ async def generate_utility_json(prompt: str) -> Optional[dict]:
     if last_exc is not None:
         logger.warning("generate_utility_json: hết key khả dụng, bỏ qua tác vụ.")
     return None
-
-
-class SearchJsonResult:
-    """Kết quả của generate_search_json(): JSON có cấu trúc (nếu parse được)
-    + grounding_sources thật (link Google Search trả về) + raw_text để debug/
-    fallback hiển thị thô khi parse JSON thất bại."""
-
-    def __init__(
-        self,
-        data: Optional[dict],
-        grounding_sources: list[tuple[str, str]],
-        raw_text: str,
-        used_api_idx: Optional[int],
-    ) -> None:
-        self.data = data
-        self.grounding_sources = grounding_sources
-        self.raw_text = raw_text
-        self.used_api_idx = used_api_idx
-
-
-def _parse_json_best_effort(raw: str) -> Optional[dict]:
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if raw.lower().startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-
-async def generate_search_json(idx: int, prompt: str) -> SearchJsonResult:
-    """Gọi THẲNG api{idx} (KHÔNG đi qua provider-chain/cookie) với Google
-    Search BẬT + yêu cầu output JSON, cho services/price_service.py (Giai
-    đoạn 2 - pipeline giá có kiểm soát). Chỉ gọi 1 key duy nhất mỗi lần -
-    việc chọn idx nào, có cooldown hay không, và fallback sang cookie khi
-    nào là trách nhiệm của price_service (dispatcher riêng, xem
-    services/price_service.py::_fetch_price_data), KHÔNG lặp ở đây, để
-    price_service kiểm soát được cooldown/quota nhất quán với provider_state
-    dùng chung cho toàn bộ bot.
-
-    ⚠️ google-genai không cho dùng đồng thời response_mime_type="application/json"
-    với Google Search tool ở một số model -> thử response_mime_type trước, nếu
-    lỗi thì retry KHÔNG có response_mime_type (chỉ dựa vào yêu cầu JSON trong
-    prompt), rồi parse best-effort (strip code fence, giống generate_utility_json).
-
-    Raise lại exception cuối nếu cả 2 lần thử đều lỗi (kể cả lỗi quota) - để
-    caller (price_service) tự quyết định có nên coi là quota-exhausted và
-    chuyển key/provider kế tiếp hay không, giống cách orchestrator xử lý."""
-    from google.genai import types
-
-    client = _get_official_client(idx)
-    search_tool = [types.Tool(google_search=types.GoogleSearch())]
-    last_exc: Optional[BaseException] = None
-
-    for use_json_mime in (True, False):
-        cfg_kwargs = {"temperature": 0.1, "tools": search_tool}
-        if use_json_mime:
-            cfg_kwargs["response_mime_type"] = "application/json"
-        try:
-            response = await client.aio.models.generate_content(
-                model=config.GOOGLE_AI_STUDIO_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(**cfg_kwargs),
-            )
-            raw_text = (response.text or "").strip()
-            data = _parse_json_best_effort(raw_text)
-            grounding_sources = _extract_grounding_sources(response)
-            return SearchJsonResult(data, grounding_sources, raw_text, used_api_idx=idx)
-        except Exception as exc:
-            last_exc = exc
-            if use_json_mime:
-                # Có thể do xung đột response_mime_type + Google Search tool ở
-                # model này - thử lại KHÔNG có response_mime_type trước khi
-                # coi là lỗi thật (quota/mạng...) và để price_service xử lý.
-                logger.info(
-                    "generate_search_json: api%s lỗi khi bật response_mime_type "
-                    "cùng Google Search, thử lại không ép JSON mime.",
-                    idx, exc_info=True,
-                )
-                continue
-            raise
-
-    assert last_exc is not None
-    raise last_exc
 
 
 async def embed_text(text: str) -> Optional[list[float]]:
