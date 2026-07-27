@@ -248,24 +248,6 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders (due_at) WHERE sent = false"
         )
 
-        # Cache kết quả /gia (services/price_service.py, Giai đoạn 3) - tránh
-        # đốt thêm 1 lượt search grounding cho câu hỏi giá lặp lại trong TTL.
-        # Không scope theo telegram_user_id: giá sản phẩm là dữ kiện khách
-        # quan, không phải dữ liệu riêng tư của từng người dùng.
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS price_cache (
-                id SERIAL PRIMARY KEY,
-                query_norm TEXT NOT NULL,
-                payload_json TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_price_cache_query ON price_cache (query_norm, created_at DESC)"
-        )
-
         # pgvector semantic recall (Bước 7 - nâng cao, làm sau cùng). Extension
         # đã được thử bật ở _ensure_vector_extension() TRƯỚC khi mở pool (xem
         # đầu init_db()) - ở đây chỉ tạo bảng/index NẾU đã bật thành công.
@@ -615,58 +597,6 @@ async def get_due_reminders() -> list[tuple[int, int, str]]:
 async def mark_reminder_sent(reminder_id: int) -> None:
     pool = await get_pool()
     await pool.execute("UPDATE reminders SET sent = true WHERE id = $1", reminder_id)
-
-
-# ─── Price search cache (services/price_service.py, Giai đoạn 3) ───────────
-
-# Chỉ giữ tối đa N dòng gần nhất trong price_cache - bot 1 người dùng nhưng
-# chạy 24/7 nên vẫn cần chặn phình vô hạn, giống CHAT_MESSAGES_RETENTION_LIMIT.
-PRICE_CACHE_RETENTION_LIMIT = 50
-
-
-@_with_reconnect
-async def get_price_cache(query_norm: str, ttl_seconds: int) -> Optional[tuple[str, datetime]]:
-    """Trả (payload_json, created_at) nếu có bản cache còn trong TTL cho
-    query_norm này, None nếu chưa có/đã hết hạn - caller (price_service) tự
-    quyết định fetch mới khi None."""
-    pool = await get_pool()
-    row = await pool.fetchrow(
-        """
-        SELECT payload_json, created_at FROM price_cache
-        WHERE query_norm = $1 AND created_at > now() - ($2 || ' seconds')::interval
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
-        query_norm,
-        str(ttl_seconds),
-    )
-    if row is None:
-        return None
-    return row["payload_json"], row["created_at"]
-
-
-@_with_reconnect
-async def set_price_cache(query_norm: str, payload_json: str) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO price_cache (query_norm, payload_json) VALUES ($1, $2)",
-                query_norm,
-                payload_json,
-            )
-            # Giữ tối đa PRICE_CACHE_RETENTION_LIMIT dòng gần nhất TOÀN BẢNG
-            # (không phải theo từng query_norm) - đơn giản hơn và đủ dùng vì
-            # bot chỉ phục vụ 1 người, số sản phẩm tra cứu khác nhau không lớn.
-            await conn.execute(
-                """
-                DELETE FROM price_cache
-                WHERE id NOT IN (
-                    SELECT id FROM price_cache ORDER BY id DESC LIMIT $1
-                )
-                """,
-                PRICE_CACHE_RETENTION_LIMIT,
-            )
 
 
 # ─── pgvector semantic recall (Bước 7, xem services/memory_service.py) ─────
