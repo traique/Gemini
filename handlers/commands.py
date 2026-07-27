@@ -12,7 +12,7 @@ import messages
 from ai import cookie_client, orchestrator
 from core import config, database as db
 from handlers import common
-from services import image_prompt_service, memory_service, price_service
+from services import memory_service
 from services.telemetry import telemetry
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,8 @@ HELP_TEXT = (
     "💬 Gõ tin nhắn bình thường để trò chuyện với em - Lan Anh - như trợ lý cá nhân.\n\n"
     "📊 Khi anh nhắc tới 1 *mã cổ phiếu Việt Nam*, mặc định em lấy giá khớp lệnh REALTIME.\n"
     "Cần phân tích sâu thì cứ nói rõ (vd \"phân tích giúp anh mã FPT\").\n\n"
-    "🖼️ Gửi ảnh kèm caption như \"viết prompt\", \"giữ mặt\", hoặc \"chân thật nhất\" để em tạo prompt ảnh cho Gemini/ChatGPT.\n\n"
-    "/prompt — viết prompt tạo ảnh cho Gemini/ChatGPT từ mô tả cơ bản\n"
+    "🖼️ *Gửi 1 ảnh chân dung* để Gemini viết lại prompt giữ nguyên khuôn mặt.\n\n"
+    "/prompt — viết prompt tạo ảnh từ mô tả cơ bản\n"
     "/gia — Tìm và so sánh giá sản phẩm\n"
     "/reset — xoá ngữ cảnh chat\n"
     "/history — xem 10 lượt gần nhất\n"
@@ -38,6 +38,62 @@ HELP_TEXT = (
     "/usecookie — ép thử lại cookie ngay\n"
     "/help — hiển thị hướng dẫn này"
 )
+
+TEXT_PROMPT_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" and HYPER-REALISTIC prompts. The goal is to generate images that look like real, candid, unretouched photographs, avoiding any "AI-generated", plasticky, or overly polished aesthetic.
+
+Based on the user's basic description, write ONE complete, ready-to-use English prompt following EXACTLY this structure and style:
+
+---
+{identity_lock}
+
+Raw, candid smartphone photo of the woman standing on a wet pedestrian street at night. She is looking slightly off-camera with a natural, unposed expression. Her hair is drenched from the rain, clinging to her neck and shoulders. 
+
+She is wearing a thin, wet white button-up shirt that clings to her skin, showing realistic wet fabric textures and natural folds. 
+
+The background is a gritty, authentic urban street at night with heavy rain. Blurred streetlights and car headlights create natural out-of-focus bokeh on the wet asphalt. 
+
+Shot on iPhone 15 Pro Max camera, unedited, unretouched. 35mm lens, f/1.8. 
+
+Harsh, imperfect street lighting mixed with camera flash. Natural skin texture, visible pores, slight skin imperfections, specular highlights on wet skin. Subtle chromatic aberration, noticeable low-light noise and film grain. Authentic, raw, documentary photography style, zero airbrushing. --ar 4:5
+---
+
+Rules for what you generate:
+1. ALWAYS start with the exact identity lock text provided in the prompt structure above.
+2. ACCURATELY describe the outfit, pose, and vibe.
+3. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless", "editorial", or "studio lighting".
+4. MANDATORY WORDS: ALWAYS include photography terms that add realism and imperfection.
+5. Output ONLY the final prompt as plain text, no markdown headers, no preamble.
+
+User's basic description: {user_desc}"""
+
+IDENTITY_LOCK_REFERENCE = "[Identity Lock: Strictly maintain the exact facial features, skin tone, age, ethnicity, and facial proportions of the person in the reference image. Preserve natural skin texture and visible pores; DO NOT smooth or airbrush the face]"
+IDENTITY_LOCK_GIRL = """[IDENTITY LOCK (ABSOLUTE CONSISTENCY)
+The subject is the exact same 20-year-old Vietnamese woman in every generation. Preserve her facial identity with zero variation.
+Heart-shaped face with a smooth jawline, large round doe eyes, natural eyelashes, delicate nose, natural soft lips. Authentic Vietnamese beauty.
+CRUCIAL FOR REALISM: Unretouched natural skin texture, visible facial pores, subtle natural skin variations, realistic specular highlights on skin. ABSOLUTELY NO airbrushing, NO flawless porcelain skin, NO plastic smoothing.
+Maintain identical facial structure, facial proportions, eye shape, eyebrow shape, nose, lips, jawline, chin, skin tone, and overall identity across every image.]"""
+
+PRICE_SEARCH_SYSTEM = """Bạn là trợ lý Lan Anh. Nhiệm vụ của bạn là sử dụng công cụ Google Search để tìm giá cập nhật mới nhất cho sản phẩm: "{product_name}" tại các hệ thống bán lẻ uy tín ở Việt Nam.
+
+YÊU CẦU QUAN TRỌNG:
+1. So khớp CHÍNH XÁC phiên bản/dung lượng.
+2. BẮT BUỘC phải trích xuất URL (đường link) gốc của trang sản phẩm để người dùng bấm vào xem.
+3. Không tự bịa giá. Nếu hệ thống báo hết hàng hoặc không có giá, hãy ghi chú rõ.
+
+Trình bày kết quả theo ĐÚNG định dạng bảng và văn phong sau:
+
+**{product_name}** — giá cập nhật mới nhất
+
+Dạ em lượn một vòng các đại lý lớn để khảo giá cho anh rồi đây nha:
+
+| Nơi bán | Giá tham khảo | Ghi chú & Link |
+| :--- | :--- | :--- |
+| [Tên shop 1] | **[Giá]đ** | [Màu sắc/Khuyến mãi ngắn gọn] - [Link trực tiếp đến sản phẩm] |
+
+🔥 **Chỗ rẻ nhất em thấy:**
+👉 **[Tên shop rẻ nhất]**: [Giá rẻ nhất]đ cho [Màu/phiên bản]. 
+
+*(Lưu ý nhỏ: Giá này em tra cứu online ngay lúc này, có thể thay đổi tùy tồn kho từng chi nhánh hoặc flash sale anh nhé).*"""
 
 @common.restricted
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -58,21 +114,22 @@ async def unknown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_desc = common.extract_arg(context)
     if not user_desc:
-        await update.message.reply_text(
-            "Anh nhập mô tả muốn tạo prompt nhé. Ví dụ:\n"
-            "/prompt cô gái ngồi trong quán cà phê mưa, nhìn chân thật như ảnh chụp"
-        )
+        await update.message.reply_text("Anh nhập mô tả muốn tạo prompt nhé. Ví dụ: /prompt cô gái đứng trước nhà")
         return
 
     user_id = update.effective_user.id
     prompt_id = await telemetry.start(user_id, "prompt_generator", user_desc)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    instruction = image_prompt_service.build_text_to_image_instruction(user_desc)
+    keep_face_keywords = ["giữ mặt", "giữ khuôn mặt", "mặt tôi", "mặt anh", "mặt em"]
+    wants_keep_face = any(kw in user_desc.lower() for kw in keep_face_keywords)
+    identity_lock = IDENTITY_LOCK_REFERENCE if wants_keep_face else IDENTITY_LOCK_GIRL
+
+    instruction = TEXT_PROMPT_INSTRUCTION_BASE.format(identity_lock=identity_lock, user_desc=user_desc)
 
     try:
         response = await orchestrator.ask(instruction)
-        result_text = image_prompt_service.response_text(response)
+        result_text = (response.text or "").strip()
 
         if not result_text:
             await telemetry.success(prompt_id, "prompt_generator", "(Gemini không trả về nội dung)")
@@ -81,10 +138,8 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         await telemetry.success(prompt_id, "prompt_generator", result_text)
         suffix = "\n\n⚙️ API" if getattr(response, "used_fallback", False) else ""
-
-        formatted = image_prompt_service.format_telegram_html(result_text)
         await update.message.reply_text(
-            f"📝 <b>Prompt ảnh cho Gemini/ChatGPT:</b>\n\n{formatted}{suffix}",
+            f"📝 <b>Prompt gợi ý:</b>\n\n<pre>{html.escape(result_text)}</pre>{suffix}",
             parse_mode="HTML",
         )
     except Exception as e:
@@ -96,10 +151,7 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     product_name = common.extract_arg(context)
     if not product_name:
-        await update.message.reply_text(
-            "Anh nhập tên sản phẩm muốn tìm giá nhé. Ví dụ: /gia iPhone 16 Pro\n"
-            "(thêm chữ \"moi\" ở cuối để bỏ qua cache, tra lại ngay, vd: /gia iPhone 16 Pro moi)"
-        )
+        await update.message.reply_text("Anh nhập tên sản phẩm muốn tìm giá nhé. Ví dụ: /gia iPhone 16 Pro")
         return
 
     user_id = update.effective_user.id
@@ -108,18 +160,22 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status = await update.message.reply_text(f"🔍 Đang dạo siêu thị tìm giá {product_name} cho anh...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    try:
-        result_text = await price_service.fetch_price_message(product_name)
-        await telemetry.success(prompt_id, "price_search", result_text)
+    instruction = PRICE_SEARCH_SYSTEM.format(product_name=product_name)
 
-        # Gửi kết quả TRƯỚC rồi mới xoá status - nếu gửi lỗi, status vẫn còn
-        # đó thay vì user mất trắng cả 2 tin (Giai đoạn 1, sửa thứ tự cũ).
-        await common.reply_long_text(update.message, result_text)
+    try:
+        response = await orchestrator.ask(instruction, enable_search=True)
+        result_text = (response.text or "").strip()
+
+        if not result_text:
+            await telemetry.success(prompt_id, "price_search", "(Gemini không trả về nội dung)")
+            await status.edit_text("Em không tìm được giá lúc này, anh thử lại sau nha.")
+            return
+
+        await telemetry.success(prompt_id, "price_search", result_text)
+        suffix = "\n\n⚙️ API" if getattr(response, "used_fallback", False) else ""
+        
         await status.delete()
-    except price_service.PriceServiceError as e:
-        logger.warning("price_cmd: không lấy được giá cho '%s': %s", product_name, e)
-        await telemetry.failure(prompt_id, "price_search", e)
-        await status.edit_text("Em không tìm được giá lúc này, anh thử lại sau nha.")
+        await common.reply_long_text(update.message, result_text + suffix)
     except Exception as e:
         logger.exception("Lỗi tìm giá sản phẩm")
         await telemetry.failure(prompt_id, "price_search", e)
