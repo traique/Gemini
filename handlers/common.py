@@ -75,6 +75,12 @@ async def reply_long_text(message, text: str) -> None:
     await tg_format.reply_rich(message, text, max_len=TELEGRAM_TEXT_MAX)
 
 
+async def reply_long_text_edit_first(status_message, text: str) -> None:
+    """Như reply_long_text, nhưng edit vào status_message có sẵn thay vì
+    gửi tin mới - dùng khi đã có 1 tin nhắn trạng thái "đang xử lý..."."""
+    await tg_format.reply_rich_edit_first(status_message, text, max_len=TELEGRAM_TEXT_MAX)
+
+
 async def download_telegram_photo_with_retry(photo, local_path: Path) -> None:
     attempts = max(1, config.TELEGRAM_MEDIA_RETRIES)
     last_error: Exception | None = None

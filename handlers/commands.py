@@ -20,6 +20,35 @@ logger = logging.getLogger(__name__)
 HISTORY_PROMPT_PREVIEW_MAX = 60
 HISTORY_LIMIT = 10
 
+# Cache ngắn hạn cho /gia: tránh gọi lại AI + search grounding khi hỏi trùng
+# tên sản phẩm trong thời gian ngắn. Key = tên sản phẩm đã chuẩn hoá.
+# Value = (thời điểm lưu, kết quả text). Bộ nhớ, mất khi bot restart -
+# chấp nhận được vì đây chỉ để giảm gọi trùng, không phải nguồn dữ liệu chính.
+_PRICE_CACHE: dict[str, tuple[float, str]] = {}
+_PRICE_CACHE_TTL_SECONDS = 30 * 60  # 30 phút
+
+
+def _normalize_product_key(product_name: str) -> str:
+    return " ".join(product_name.lower().split())
+
+
+def _get_cached_price(product_name: str) -> str | None:
+    key = _normalize_product_key(product_name)
+    cached = _PRICE_CACHE.get(key)
+    if not cached:
+        return None
+    saved_at, text = cached
+    age = time.time() - saved_at
+    if age > _PRICE_CACHE_TTL_SECONDS:
+        _PRICE_CACHE.pop(key, None)
+        return None
+    minutes = max(1, int(age // 60))
+    return f"{text}\n\n*(⏱️ Kết quả tra cứu cách đây {minutes} phút, lấy từ cache anh nhé)*"
+
+
+def _set_cached_price(product_name: str, text: str) -> None:
+    _PRICE_CACHE[_normalize_product_key(product_name)] = (time.time(), text)
+
 HELP_TEXT = (
     "📖 *Các lệnh hỗ trợ:*\n\n"
     "💬 Gõ tin nhắn bình thường để trò chuyện với em - Lan Anh - như trợ lý cá nhân.\n\n"
@@ -80,20 +109,26 @@ YÊU CẦU QUAN TRỌNG:
 2. BẮT BUỘC phải trích xuất URL (đường link) gốc của trang sản phẩm để người dùng bấm vào xem.
 3. Không tự bịa giá. Nếu hệ thống báo hết hàng hoặc không có giá, hãy ghi chú rõ.
 
-Trình bày kết quả theo ĐÚNG định dạng bảng và văn phong sau:
+Trình bày kết quả theo ĐÚNG định dạng list (KHÔNG dùng bảng markdown vì Telegram không hiển thị được bảng) và văn phong sau:
 
 **{product_name}** — giá cập nhật mới nhất
 
 Dạ em lượn một vòng các đại lý lớn để khảo giá cho anh rồi đây nha:
 
-| Nơi bán | Giá tham khảo | Ghi chú & Link |
-| :--- | :--- | :--- |
-| [Tên shop 1] | **[Giá]đ** | [Màu sắc/Khuyến mãi ngắn gọn] - [Link trực tiếp đến sản phẩm] |
+🏬 **[Tên shop 1]** — **[Giá]đ**
+[Màu sắc/Khuyến mãi ngắn gọn]. [Xem sản phẩm]([Link trực tiếp đến sản phẩm])
+
+🏬 **[Tên shop 2]** — **[Giá]đ**
+[Màu sắc/Khuyến mãi ngắn gọn]. [Xem sản phẩm]([Link trực tiếp đến sản phẩm])
+
+(lặp lại 1 khối như trên cho mỗi shop tìm được, tối đa 5 shop)
 
 🔥 **Chỗ rẻ nhất em thấy:**
-👉 **[Tên shop rẻ nhất]**: [Giá rẻ nhất]đ cho [Màu/phiên bản]. 
+👉 **[Tên shop rẻ nhất]**: [Giá rẻ nhất]đ cho [Màu/phiên bản].
 
-*(Lưu ý nhỏ: Giá này em tra cứu online ngay lúc này, có thể thay đổi tùy tồn kho từng chi nhánh hoặc flash sale anh nhé).*"""
+*(Lưu ý nhỏ: Giá này em tra cứu online ngay lúc này, có thể thay đổi tùy tồn kho từng chi nhánh hoặc flash sale anh nhé).*
+
+QUAN TRỌNG VỀ LINK: mỗi link BẮT BUỘC viết đúng cú pháp markdown [Chữ hiển thị](https://url-that-page), không được dán URL trần, không được để URL trong ngoặc đơn kèm mô tả."""
 
 @common.restricted
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -155,6 +190,14 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     user_id = update.effective_user.id
+
+    cached_text = _get_cached_price(product_name)
+    if cached_text is not None:
+        await telemetry.start(user_id, "price_search", product_name)
+        await update.message.reply_text(f"⚡ Có kết quả gần đây cho \"{product_name}\", gửi anh liền nè:")
+        await common.reply_long_text(update.message, cached_text)
+        return
+
     prompt_id = await telemetry.start(user_id, "price_search", product_name)
 
     status = await update.message.reply_text(f"🔍 Đang dạo siêu thị tìm giá {product_name} cho anh...")
@@ -172,10 +215,10 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         await telemetry.success(prompt_id, "price_search", result_text)
+        _set_cached_price(product_name, result_text)
         suffix = "\n\n⚙️ API" if getattr(response, "used_fallback", False) else ""
-        
-        await status.delete()
-        await common.reply_long_text(update.message, result_text + suffix)
+
+        await common.reply_long_text_edit_first(status, result_text + suffix)
     except Exception as e:
         logger.exception("Lỗi tìm giá sản phẩm")
         await telemetry.failure(prompt_id, "price_search", e)
