@@ -47,12 +47,17 @@ def get_provider_state_snapshot() -> dict:
 
 
 # ─── Provider-chain dispatcher (tổng quát hoá theo config.PROVIDER_ORDER) ──
-async def _run_provider_chain(*, cookie_call, api_call):
+async def _run_provider_chain(*, cookie_call, api_call, providers_override: Optional[list[str]] = None):
     """cookie_call: async callable () -> ModelOutput (gemini-webapi).
     api_call: async callable (idx: int) -> official_client.FallbackResponse.
 
     Thứ tự thử: theo config.PROVIDER_ORDER (mặc định cookie -> api1 -> api2,
     đổi được qua env PROVIDER_ORDER - xem README mục Provider-chain).
+
+    providers_override: nếu truyền, dùng list này THAY VÌ config.PROVIDER_ORDER
+    cho cả vòng thử chính lẫn "cứu cánh cuối" - dùng khi tác vụ gọi cần loại
+    hẳn 1 provider ra khỏi mọi khả năng thử (vd nhánh cookie không có Google
+    Search tool thật, xem ask(require_real_search=...)).
 
     - "cookie" trong order: bỏ qua nếu đã biết chết (cookie_dead_since is not
       None) - không retry mỗi tin nhắn, chỉ probe nền/lệnh /usecookie mới
@@ -68,6 +73,7 @@ async def _run_provider_chain(*, cookie_call, api_call):
       tiên đều đang gặp sự cố tạm thời cùng lúc.
     """
     await provider_state.ensure_loaded()
+    order = providers_override if providers_override is not None else config.PROVIDER_ORDER
 
     async def _attempt_cookie():
         result = await _run_with_call_timeout(cookie_call)
@@ -84,7 +90,7 @@ async def _run_provider_chain(*, cookie_call, api_call):
         last_exc: Optional[BaseException] = None
         known_bad_skipped: list[str] = []
 
-        for provider in config.PROVIDER_ORDER:
+        for provider in order:
             if provider == "cookie":
                 if provider_state.cookie_dead_since is not None:
                     known_bad_skipped.append("cookie")
@@ -151,12 +157,22 @@ async def _run_provider_chain(*, cookie_call, api_call):
         )
 
 
-async def ask(prompt: str, model: Optional[str] = None, enable_search: bool = False):
+async def ask(prompt: str, model: Optional[str] = None, enable_search: bool = False, require_real_search: bool = False):
     """Tác vụ 1 lượt (vd narrative phân tích cổ phiếu) - không cần trí nhớ,
     không cần persona system_instruction (prompt đã tự chứa persona rút gọn).
 
     model: tên model tường minh do caller truyền vào (ưu tiên cao nhất).
-    Không truyền -> lấy model ưu tiên đã lưu qua lệnh /model."""
+    Không truyền -> lấy model ưu tiên đã lưu qua lệnh /model.
+
+    require_real_search: BẮT BUỘC loại nhánh cookie khỏi provider-chain, chỉ
+    thử api1/api2. Lý do: cookie (ai/cookie_client.py) KHÔNG có Google Search
+    tool thật gắn kèm request - nó chỉ dựa vào việc app Gemini web tự quyết
+    định có browse hay không, Claude/caller không kiểm soát được. Với các
+    tác vụ mà kết quả sai/thiếu search là không chấp nhận được (vd /gia -
+    tra giá sản phẩm), dùng cờ này để đảm bảo LUÔN có types.Tool(google_search)
+    thật đi kèm request (xem official_client.generate), thay vì im lặng phụ
+    thuộc vào việc cookie có "chịu" search hay không (từng gây bịa giá/link,
+    hoặc tệ hơn là từ chối trả lời dù dữ liệu có sẵn công khai)."""
     model_name = model or await cookie_client.get_preferred_model_name()
 
     async def _cookie_call():
@@ -174,7 +190,15 @@ async def ask(prompt: str, model: Optional[str] = None, enable_search: bool = Fa
     async def _api_call(idx: int):
         return await official_client.generate(idx, prompt, model=model_name, enable_search=enable_search)
 
-    return await _run_provider_chain(cookie_call=_cookie_call, api_call=_api_call)
+    providers_override = None
+    if require_real_search:
+        providers_override = [p for p in config.PROVIDER_ORDER if p != "cookie"]
+        if not providers_override:
+            # PROVIDER_ORDER bị cấu hình chỉ có "cookie" - vẫn ép dùng api1/api2
+            # nếu có key, vì require_real_search nghĩa là cookie không đủ tin cậy.
+            providers_override = ["api1", "api2"]
+
+    return await _run_provider_chain(cookie_call=_cookie_call, api_call=_api_call, providers_override=providers_override)
 
 
 async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: str = ""):
