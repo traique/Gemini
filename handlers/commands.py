@@ -269,7 +269,7 @@ async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     instruction = PRICE_SEARCH_SYSTEM.format(product_name=product_name)
 
     try:
-        response = await orchestrator.ask(instruction, enable_search=True)
+        response = await orchestrator.ask(instruction, enable_search=True, require_real_search=True)
         result_text = (response.text or "").strip()
 
         if not result_text:
