@@ -12,6 +12,7 @@ import messages
 from core import config
 from ai import orchestrator
 from handlers import common
+from handlers.commands import IDENTITY_LOCK_GIRL, IDENTITY_LOCK_REFERENCE
 from services.telemetry import telemetry
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,9 @@ IMAGE_ANALYZE_INSTRUCTION_BASE = """You are an expert prompt engineer for AI ima
 Look at the attached reference image and write ONE complete, ready-to-use English prompt following EXACTLY this structure and style (this is an example of the expected style/quality - match its level of detail, but invent NEW creative content appropriate to the reference photo):
 
 ---
-[Identity Lock: Strictly maintain the exact facial features, skin tone, age, ethnicity, and facial proportions of the person in the reference image. Preserve natural skin texture and visible pores; DO NOT smooth or airbrush the face].
+{identity_lock_example}
 
-Raw, candid smartphone photo of the woman from the reference image standing on a wet pedestrian street at night. She is looking slightly off-camera with a natural, unposed expression. Her hair is drenched from the rain, clinging to her neck and shoulders. 
+Raw, candid smartphone photo of the subject from the reference image standing on a wet pedestrian street at night. She is looking slightly off-camera with a natural, unposed expression. Her hair is drenched from the rain, clinging to her neck and shoulders.
 
 She is wearing a thin, wet white button-up shirt that clings to her skin, showing realistic wet fabric textures and natural folds. 
 
@@ -35,7 +36,7 @@ Harsh, imperfect street lighting mixed with camera flash. Natural skin texture, 
 ---
 
 Rules for what you generate:
-1. ALWAYS start with an "[Identity Lock: ...]" line.
+{identity_rule}
 2. ACCURATELY describe the outfit, pose, and vibe of the reference image. If it's a sensual/wet look, describe it accurately using anatomical and clothing terms without being explicitly pornographic.
 3. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless", "editorial", or "studio lighting". These cause the image to look fake.
 4. MANDATORY WORDS: ALWAYS include photography terms that add realism and imperfection, such as "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting", or specific camera models (e.g., "Shot on Kodak Portra 400", "Polaroid", "iPhone snapshot").
@@ -54,11 +55,29 @@ async def photo_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     filename = f"promptify_{prompt_id}.jpg"
     local_path = config.MEDIA_DIR / filename
 
+    keep_face_keywords = ["giữ mặt", "giữ khuôn mặt", "mặt tôi", "mặt anh", "mặt em"]
+    wants_keep_face = False
+
+    if caption:
+        wants_keep_face = any(kw in caption.lower() for kw in keep_face_keywords)
+        if wants_keep_face:
+            identity_lock_example = IDENTITY_LOCK_REFERENCE
+            identity_rule = "1. ALWAYS start with the exact identity lock text provided in the prompt structure above."
+        else:
+            identity_lock_example = IDENTITY_LOCK_GIRL
+            identity_rule = "1. ALWAYS start with the exact identity lock text provided in the prompt structure above."
+    else:
+        identity_lock_example = "[Identity Lock: None. Let the AI decide the subject's face based on the image]."
+        identity_rule = "1. ONLY start with an \"[Identity Lock: ...]\" line IF the reference image clearly contains a person or face. If the image is a landscape, object, or has no clear human subject, DO NOT include the Identity Lock."
+
     try:
         tg_photo = update.message.photo[-1]
         await common.download_telegram_photo_with_retry(tg_photo, local_path)
 
-        instruction = IMAGE_ANALYZE_INSTRUCTION_BASE
+        instruction = IMAGE_ANALYZE_INSTRUCTION_BASE.format(
+            identity_lock_example=identity_lock_example,
+            identity_rule=identity_rule
+        )
         if caption:
             instruction += f"\n\nAdditional user instruction: {caption}"
 
