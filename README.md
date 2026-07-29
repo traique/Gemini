@@ -44,7 +44,7 @@ kiến trúc multi-tenant.
   `chat_skill.yaml` (đời sống, công việc, kiến thức chung...).
 - **Phân tích cổ phiếu Việt Nam**: tra giá/khối lượng/vốn hoá realtime, phân
   tích kỹ thuật (MA/RSI/MACD/ADX/hỗ trợ-kháng cự), phân tích cơ bản (P/E,
-  P/B, khối ngoại...), ngữ cảnh ngành, tin tức — qua pipeline
+  P/B...), ngữ cảnh ngành, tin tức (lưu ý: tính năng tra cứu dòng tiền khối ngoại hiện chưa hoạt động) — qua pipeline
   `stock_analysis.py` (fetch → validate → feature → policy → prompt) độc
   lập với Gemini cho phần số liệu, chỉ dùng Gemini để diễn giải.
 - **Provider-chain tự phục hồi**: cookie lỗi tự chuyển API chính thức, quay
@@ -311,6 +311,8 @@ giữ).
 
 | Lệnh | Mô tả |
 |---|---|
+| `/prompt` | Viết prompt tạo ảnh từ mô tả cơ bản |
+| `/gia` | Tìm và so sánh giá sản phẩm (iPhone, Tivi...) |
 | `/reset` | Xoá ngữ cảnh chat (cả cookie lẫn trí nhớ API), bắt đầu hội thoại mới |
 | `/history` | Xem 10 lượt gần nhất (trí nhớ theo phiên) |
 | `/memory` | Xem trí nhớ dài hạn (sự thật + tóm tắt) |

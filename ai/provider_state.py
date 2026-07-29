@@ -34,6 +34,7 @@ SETTING_PSIDTS_SEED = "gemini_1psidts_seed"
 # - tầng khởi tạo bot đăng ký 1 callback async nhận text, gọi
 # set_alert_callback(fn) đúng 1 lần lúc bot_app.build_application().
 _alert_callback: Optional[Callable[[str], Awaitable[None]]] = None
+_background_tasks: set[asyncio.Task] = set()
 
 
 def set_alert_callback(fn: Callable[[str], Awaitable[None]]) -> None:
@@ -45,7 +46,9 @@ def send_alert(text: str) -> None:
     if _alert_callback is None:
         return
     try:
-        asyncio.create_task(_alert_callback(text))
+        task = asyncio.create_task(_alert_callback(text))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     except Exception:
         logger.warning("Không gửi được cảnh báo qua Telegram.", exc_info=True)
 
