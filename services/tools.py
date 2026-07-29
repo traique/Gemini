@@ -154,6 +154,13 @@ async def maybe_run_tool(user_id: int, user_text: str) -> Optional[str]:
         result = await handler(user_id, **args)
         logger.info("Function calling: đã chạy tool '%s' cho user_id=%s", tool_name, user_id)
         return f"[Kết quả tool '{tool_name}' vừa chạy - dùng thông tin này để trả lời tự nhiên]\n{result}"
+    except TypeError:
+        logger.warning(
+            "Lỗi TypeError khi chạy tool '%s' (có thể do Gemini truyền sai args). Args: %s",
+            tool_name,
+            args,
+        )
+        return None
     except Exception:
         logger.warning(
             "Lỗi khi chạy function-calling router (bỏ qua, chat chính vẫn tiếp tục bình thường).",

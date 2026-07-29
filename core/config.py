@@ -109,7 +109,7 @@ ENABLE_DAILY_DIGEST = _env_bool("ENABLE_DAILY_DIGEST", True)
 DAILY_DIGEST_HOUR_VN = _env_int("DAILY_DIGEST_HOUR_VN", 8)
 
 CHAT_SKILL_PATH = Path(os.getenv("CHAT_SKILL_PATH", "chat_skill.yaml").strip())
-_CHAT_SKILL_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "chat_skill_prompt.j2"
+_CHAT_SKILL_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "chat_skill_prompt.j2"
 
 
 def load_chat_skill() -> str:
