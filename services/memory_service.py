@@ -35,15 +35,40 @@ logger = logging.getLogger(__name__)
 # nhật của lượt chạy trước. Dùng dict thay vì 1 lock chung để không chặn lẫn
 # nhau giữa các user khác (dù bot hiện chỉ phục vụ 1 user, giữ đúng tương lai
 # mở rộng đa user).
+#
+# Kèm đếm số lượt đang dùng để DỌN lock khi không còn ai cần: trước đây
+# dict này chỉ thêm mà không bao giờ bịt đi, nên với deployment nhiều user
+# nó là rò rỉ bộ nhớ chậm (mỗi user từng chat để lại 1 Lock sống mãi tới khi
+# restart process).
 _user_locks: dict[int, asyncio.Lock] = {}
+_lock_users: dict[int, int] = {}
 
 
 def _lock_for(user_id: int) -> asyncio.Lock:
+    """Lấy (hoặc tạo) lock của user và tăng số đếm người dùng lock đó.
+
+    Mọi lần gọi PHẢI đi kèm 1 lần _release_lock() tương ứng (dùng try/finally).
+    """
     lock = _user_locks.get(user_id)
     if lock is None:
         lock = asyncio.Lock()
         _user_locks[user_id] = lock
+    _lock_users[user_id] = _lock_users.get(user_id, 0) + 1
     return lock
+
+
+def _release_lock(user_id: int) -> None:
+    """Giảm số đếm; khi không còn lượt nào đang giữ/chờ thì bỏ lock khỏi dict.
+
+    Chỉ bỏ khi số đếm về 0 nên không có nguy cơ 2 lượt song song của cùng
+    user nhận 2 Lock khác nhau (mất tác dụng bảo vệ ghi đè).
+    """
+    remaining = _lock_users.get(user_id, 1) - 1
+    if remaining > 0:
+        _lock_users[user_id] = remaining
+        return
+    _lock_users.pop(user_id, None)
+    _user_locks.pop(user_id, None)
 
 # Trần số fact lưu / user, tránh user_facts phình vô hạn qua thời gian nếu
 # Gemini trích xuất quá tay (vd nhớ nhầm chuyện phiếm thành "sự thật").
@@ -111,8 +136,12 @@ async def update_memory(user_id: int, user_text: str, model_text: str) -> None:
     công. KHÔNG BAO GIỜ raise ra ngoài - đây là tác vụ chạy ngầm
     (asyncio.create_task ở handlers/chat_router.py), lỗi ở đây không được phép ảnh
     hưởng luồng trả lời chính cho người dùng."""
-    async with _lock_for(user_id):
-        await _update_memory_locked(user_id, user_text, model_text)
+    lock = _lock_for(user_id)
+    try:
+        async with lock:
+            await _update_memory_locked(user_id, user_text, model_text)
+    finally:
+        _release_lock(user_id)
 
 
 async def _update_memory_locked(user_id: int, user_text: str, model_text: str) -> None:
