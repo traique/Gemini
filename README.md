@@ -19,7 +19,7 @@ kiến trúc multi-tenant.
 - [Deploy](#deploy)
 - [Các lệnh](#các-lệnh)
 - [Xử lý lỗi thường gặp](#xử-lý-lỗi-thường-gặp)
-- [Kiểm thử](#kiểm-thử)
+- [Kiểm thụ](#kiểm-thụ)
 
 ## Cảnh báo trước khi dùng
 
@@ -29,7 +29,7 @@ kiến trúc multi-tenant.
   đích cá nhân/nội bộ, tự chịu rủi ro tài khoản có thể bị giới hạn hoặc khoá
   nếu Google phát hiện truy cập bất thường.
 - `GEMINI_SECURE_1PSID` là session token **toàn quyền tài khoản Google** của
-  bạn. Không chia sẻ, không commit lên Git, không log ra console. Bật
+  bạn. Không chia sẽ, không commit lên Git, không log ra console. Bật
   `SETTINGS_ENC_KEY` để mã hoá trước khi lưu vào DB (xem [Cấu hình](#cấu-hình)).
 - Bot chỉ phục vụ đúng 1 Telegram user ID. Muốn cho nhiều người dùng cần
   kiến trúc multi-tenant riêng (auth, cách ly dữ liệu, billing) — không nằm
@@ -88,7 +88,6 @@ gemini-telegram-bot/
 ├── messages.py                # Chuỗi thông báo UI/cảnh báo dùng chung
 ├── stock_analysis.py          # Orchestrator: fetch -> validate -> feature -> policy -> prompt
 ├── stock_features.py          # Feature layer thuần toán (RSI/MACD/ADX/ATR/Donchian/Bollinger)
-├── stock_indicators.py        # Chỉ báo kỹ thuật bổ sung
 ├── stock_validation.py        # Đánh giá chất lượng dữ liệu OHLCV
 ├── stock_policy.py            # Policy layer: gate quyết định action (bao gồm NO_TRADE)
 ├── stock_backtest.py          # Backtest walk-forward tối thiểu cho tín hiệu BUY
@@ -101,7 +100,7 @@ gemini-telegram-bot/
 │   ├── stock_analysis_prompt.j2
 │   └── chat_skill_prompt.j2
 ├── chat_skill.yaml              # Persona/rules/tone cho chat tự nhiên (có cấu trúc)
-├── tests/                       # Unit test (pytest, chạy bằng mock)
+├── test/                        # Unit test (pytest, chạy bằng mock)
 ├── .github/workflows/keep-alive.yml  # Cron ping giữ Render không ngủ
 ├── render.yaml                  # Blueprint Render
 ├── requirements.txt
@@ -342,14 +341,14 @@ lệnh riêng.
 | Tin nhắn đầu sau 1 lúc không dùng bị chậm | Service đang cold start trên Render, đợi ~30-60s. |
 | `/history` báo lỗi kết nối DB | Kiểm tra `DATABASE_URL`, đảm bảo Supabase project chưa bị pause (tự pause sau ~1 tuần không hoạt động ở gói free). |
 
-## Kiểm thử
+## Kiểm thụ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/ -v
+pytest test/ -v
 ```
 
 Toàn bộ test chạy bằng mock, không cần Postgres/API key thật — bao gồm
 provider-chain (chuyển đổi cookie/api1/api2, cooldown quota), trí nhớ dài
 hạn, router function calling, các lớp phân tích cổ phiếu (validation,
-policy, backtest, indicators), và handler Telegram.
+policy, backtest), và handler Telegram.
