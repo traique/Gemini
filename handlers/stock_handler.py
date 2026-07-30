@@ -17,6 +17,13 @@ class StockRouteResult(NamedTuple):
 async def maybe_handle(update, user_id: int, text: str) -> StockRouteResult:
     symbols = await stock_analysis.find_valid_symbols(text)
     if not symbols:
+        # Không nhận ra mã nào, nhưng câu hỏi RÕ RÀNG đang hỏi giá: chặn ở
+        # đây thay vì để rơi xuống orchestrator.chat. Không có block
+        # "[DỮ LIỆU GIÁ THỰC TẾ ...]" thì Gemini gần như chắc chắn dựng ra
+        # một con số nghe hợp lý rồi trình bày như số liệu thật.
+        if stock_analysis.looks_like_price_question(text):
+            await update.message.reply_text(messages.STOCK_SYMBOL_UNRESOLVED)
+            return StockRouteResult(handled=True, grounding="")
         return StockRouteResult(handled=False, grounding="")
 
     if stock_analysis.wants_portfolio_analysis(text, symbols):

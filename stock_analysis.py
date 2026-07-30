@@ -56,6 +56,15 @@ _COMMON_WORD_EXCLUDE = {
     "OK", "CEO", "CFO", "CTO", "ATM", "PR", "FYI", "ASAP", "VIP", "FAQ",
     "TV", "PC", "AI", "US", "UK", "EU", "OS", "ID", "URL", "PDF", "CV", "OMG",
 }
+
+# Chỉ áp dụng cho token VIẾT THƯỜNG (xem detect_symbol_candidates). Tiếng Việt
+# không dấu sinh ra khá nhiều token 3-4 ký tự vô hại; loại sẵn nhóm hay gặp
+# nhất để đỡ tốn request verify tới DNSE. Tính đúng đắn vẫn do DNSE quyết
+# định - list này thuần tuý là tối ưu, không phải rào chắn.
+_LOWERCASE_NOISE_EXCLUDE = {
+    "BAO", "HOM", "MAI", "QUA", "DANG", "CHUA", "HAY", "TOI", "MINH",
+    "VAN", "CON", "THI", "MOI", "BAY", "MUA", "BAN", "GIU", "SAN",
+}
 _MAX_UNVERIFIED_PER_MSG = 6
 
 _AMBIGUOUS_KNOWN = {"GAS", "VND", "HAG", "OIL"}
@@ -73,6 +82,11 @@ def detect_symbol_candidates(text: str) -> tuple[list[str], list[str]]:
     known, unverified = [], []
     seen = set()
     stock_context = _has_stock_context(text)
+    # Tin nhắn có tín hiệu rõ ràng là đang nói chuyện cổ phiếu ("cổ phiếu",
+    # "mã", "phân tích") hoặc đang hỏi giá -> chấp nhận cả token viết thường
+    # làm ứng viên mã. _PRICE_KEYWORDS_RE khai báo phía dưới trong module,
+    # chỉ resolve lúc gọi hàm nên không lỗi thứ tự.
+    allow_lowercase = stock_context or bool(_PRICE_KEYWORDS_RE.search(text))
 
     for m in _INDEX_NAME_RE.finditer(text):
         norm = _normalize_index_name(m.group(0))
@@ -92,11 +106,22 @@ def detect_symbol_candidates(text: str) -> tuple[list[str], list[str]]:
                 # không liên quan.
                 continue
             known.append(upper)
-        elif tok in uppercase_tokens and upper not in _COMMON_WORD_EXCLUDE:
-            # nhóm unverified (cần verify qua DNSE) chỉ nhận token viết HOA
-            # NGUYÊN BẢN trong tin nhắn gốc - token thường (vd "hom", "vang",
-            # "ket" từ tiếng Việt không dấu) không được coi là ứng viên mã,
-            # tránh tốn request verify và false positive khi trùng mã thật.
+        else:
+            # nhóm unverified (cần verify qua DNSE). TRƯỚC ĐÂY nhóm này chỉ
+            # nhận token viết HOA NGUYÊN BẢN, nên mọi mã không nằm trong
+            # ALL_KNOWN_SYMBOLS mà người dùng gõ thường (vd "gvr") bị bỏ rơi
+            # hoàn toàn - find_valid_symbols trả rỗng, câu hỏi rơi xuống
+            # Gemini không kèm grounding và bị trả lời bằng giá bịa.
+            # Nay token viết thường cũng được nhận, nhưng chỉ khi tin nhắn có
+            # ngữ cảnh chứng khoán/hỏi giá (allow_lowercase) để token thường
+            # từ tiếng Việt không dấu không tràn vào đây.
+            is_upper = tok in uppercase_tokens
+            if not (is_upper or allow_lowercase):
+                continue
+            if upper in _COMMON_WORD_EXCLUDE:
+                continue
+            if not is_upper and upper in _LOWERCASE_NOISE_EXCLUDE:
+                continue
             unverified.append(upper)
     return known, unverified
 
@@ -177,6 +202,28 @@ def wants_price_quote(text: str, symbols: list[str]) -> bool:
     remaining = _PRICE_KEYWORDS_RE.sub(" ", remaining)
     remaining = _BARE_SYMBOLS_FILLER_RE.sub(" ", remaining)
     return remaining.strip() == ""
+
+
+def looks_like_price_question(text: str) -> bool:
+    """Tin nhắn RÕ RÀNG đang hỏi giá nhưng hệ thống không nhận ra mã nào.
+
+    Dùng để CHẶN, không đẩy câu hỏi xuống Gemini: khi không có khối
+    "[DỮ LIỆU GIÁ THỰC TẾ ...]" đi kèm, LLM gần như chắc chắn dựng ra một con
+    số nghe hợp lý rồi trình bày như số liệu thật. Thà trả lời "không tra
+    được mã" còn hơn trả lời sai số.
+
+    Chỉ trả True khi có keyword giá VÀ còn ít nhất một token 3-4 ký tự trông
+    giống mã (không nằm trong các list từ thông dụng) - để "giá vàng hôm nay
+    bao nhiêu" vẫn đi tiếp xuống chat bình thường.
+    """
+    if not _PRICE_KEYWORDS_RE.search(text):
+        return False
+    for tok in _SYMBOL_TOKEN_RE.findall(text):
+        upper = tok.upper()
+        if upper in _COMMON_WORD_EXCLUDE or upper in _LOWERCASE_NOISE_EXCLUDE:
+            continue
+        return True
+    return False
 
 def format_quote_message(q: providers.Quote) -> str:
     arrow, sign = ("🟢▲", "+") if q.change > 0 else ("🔴▼", "") if q.change < 0 else ("⚪", "")

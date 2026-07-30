@@ -19,6 +19,13 @@ COOKIE_STALE_WARNING = (
 STOCK_FETCH_ERROR = "Em không lấy được dữ liệu giá cho mã {symbol} lúc này, anh thử lại sau ít phút nhé."
 STOCK_ANALYZE_FAILED = "❌ Lỗi khi phân tích {symbol}, bỏ qua mã này."
 STOCK_QUOTE_FAILED = "❌ Lỗi khi lấy giá {symbol}, bỏ qua mã này."
+# Dùng khi tin nhắn rõ ràng đang hỏi giá nhưng hệ thống không nhận ra mã nào.
+# Thà nói thẳng là không tra được, còn hơn để Gemini trả lời không có dữ liệu
+# thật và bịa ra một con số nghe hợp lý.
+STOCK_SYMBOL_UNRESOLVED = (
+    "Anh ơi em chưa tra ra mã cổ phiếu nào trong câu này nên không dám đọc giá đại đâu ạ. "
+    "Anh gõ lại mã in HOA giúp em nha (vd: GVR), hoặc thêm chữ \"cổ phiếu\" phía trước."
+)
 
 # ─── Chat & lệnh chung ───────────────────────────────────────────────────────
 INVALID_COMMAND = "Lệnh không hợp lệ. Gõ /help để xem danh sách lệnh."
