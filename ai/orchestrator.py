@@ -22,15 +22,23 @@ logger = logging.getLogger(__name__)
 # Chỉ 1 tài khoản / 1 session -> serialize mọi request qua provider-chain.
 call_lock = asyncio.Lock()
 
-# Trần thời gian tối đa cho MỘT lượt gọi qua cookie (init + generate/send),
-# tính cả các bước generate_content()/send_message() không có tham số
-# timeout riêng - nếu không chặn ở đây, 1 lượt treo mạng có thể kéo dài tới
-# vài phút trước khi gemini-webapi tự bỏ cuộc, làm fallback bị trễ theo.
-_CALL_TIMEOUT_SEC = config.GEMINI_COOKIE_CALL_TIMEOUT_SEC
+
+def _call_timeout_sec() -> float:
+    """Trần thời gian tối đa cho MỘT lượt gọi qua cookie (init + generate/send),
+    tính cả các bước generate_content()/send_message() không có tham số
+    timeout riêng - nếu không chặn ở đây, 1 lượt treo mạng có thể kéo dài tới
+    vài phút trước khi gemini-webapi tự bỏ cuộc, làm fallback bị trễ theo.
+
+    Đọc config ĐỘNG tại điểm dùng, không bind vào hằng số module lúc import:
+    test (và về sau có thể là lệnh cấu hình runtime) chỉ cần patch
+    config.GEMINI_COOKIE_CALL_TIMEOUT_SEC là mọi chỗ trong file này thấy giá
+    trị mới, thay vì phải patch thêm hằng số riêng của module này.
+    """
+    return config.GEMINI_COOKIE_CALL_TIMEOUT_SEC
 
 
 async def _run_with_call_timeout(call_fn):
-    return await asyncio.wait_for(call_fn(), timeout=_CALL_TIMEOUT_SEC)
+    return await asyncio.wait_for(call_fn(), timeout=_call_timeout_sec())
 
 
 async def init_provider_state() -> None:
@@ -117,7 +125,7 @@ async def _run_provider_chain(*, cookie_call, api_call, providers_override: Opti
                         logger.warning(
                             "Cookie Gemini vẫn lỗi sau khi thử lại (quá %ss hoặc lỗi khác), "
                             "đánh dấu chết và chuyển sang provider kế trong order.",
-                            _CALL_TIMEOUT_SEC, exc_info=True,
+                            _call_timeout_sec(), exc_info=True,
                         )
                         await provider_state.mark_cookie_dead()
             else:
@@ -205,7 +213,7 @@ async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: s
     """Chat tự nhiên (persona Lan Anh) qua provider-chain.
     - Cookie: ChatSession (gemini-webapi) - Google giữ lịch sử phía họ. Vì
       lịch sử được Google lưu vĩnh viễn cho session, memory_context (trí nhớ
-      dài hạn, không đổi trong phiên) chỉ chèn vào LƯmathỢT ĐẦU TIÊN của mỗi
+      dài hạn, không đổi trong phiên) chỉ chèn vào LƯỢT ĐẦU TIÊN của mỗi
       phiên mới; grounding (giá thực tế, đổi liên tục) chèn ở MỌI lượt.
     - API (api1/api2): stateless, nên memory_context/grounding + lịch sử
       cửa sổ trượt (core.database.get_session_messages()) được nạp lại ở MỌI lượt.
@@ -301,11 +309,12 @@ async def check_cookie_status() -> tuple[bool, str]:
         return True, "OK"
     except asyncio.TimeoutError:
         # Phải bắt TRƯỚC `except Exception` vì TimeoutError là subclass của nó.
+        timeout_sec = _call_timeout_sec()
         logger.warning(
             "Probe cookie quá %ss -> coi như cookie chưa dùng được (nhả call_lock ngay).",
-            _CALL_TIMEOUT_SEC,
+            timeout_sec,
         )
-        return False, f"TimeoutError: ping cookie quá {_CALL_TIMEOUT_SEC}s"
+        return False, f"TimeoutError: ping cookie quá {timeout_sec}s"
     except Exception as e:
         # Không gọi reset_client() ở đây để tránh phá state của các request
         # khác đang chạy song song một cách không cần thiết.
