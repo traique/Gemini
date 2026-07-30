@@ -389,10 +389,19 @@ def _fmt_epoch_vn(ts: float) -> str:
 async def _noop_ai_status() -> tuple[bool, str]:
     return False, "Chưa cấu hình"
 
-@common.restricted
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("🔎 Đang kiểm tra provider-chain...")
 
+# Cache ngắn hạn cho /status: MỖI lần build trạng thái phải ping THẬT tới
+# cookie + api1 + api2 (3 request LLM có phí/quota, riêng nhánh cookie còn
+# chiếm orchestrator.call_lock nên chặn cả tin nhắn chat đang chờ). Gõ
+# /status vài lần liên tiếp - điều rất dễ xảy ra khi đang theo dõi sự cố -
+# vì thế vừa tốn quota vừa làm bot ì ạch. Cache 90s là đủ ngắn để vẫn phản
+# ánh đúng tình hình hiện tại, nhưng chặn được loạt gõ trùng.
+_STATUS_CACHE_TTL_SECONDS = 90
+_status_cache: tuple[float, str] | None = None
+
+
+async def _build_status_text() -> str:
+    """Ping thật cả 3 provider rồi dựng text trạng thái (HTML parse_mode)."""
     (cookie_ok, cookie_detail), api1_status, api2_status = await asyncio.gather(
         orchestrator.check_cookie_status(),
         orchestrator.check_ai_studio_status(1) if config.GOOGLE_AI_STUDIO_API_KEY_1 else _noop_ai_status(),
@@ -425,7 +434,31 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     order_line = f"🔢 PROVIDER_ORDER: {' → '.join(config.PROVIDER_ORDER)}"
 
     lines = ["📡 <b>Trạng thái bot</b>", "", active_line, order_line, "", cookie_line, api1_line, api2_line, "", model_line]
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    return "\n".join(lines)
+
+
+@common.restricted
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _status_cache
+
+    now = time.time()
+    if _status_cache is not None and now - _status_cache[0] <= _STATUS_CACHE_TTL_SECONDS:
+        checked_at, cached_text = _status_cache
+        await update.message.reply_text(
+            f"{cached_text}\n\n<i>⏱️ Kiểm tra lúc {_fmt_epoch_vn(checked_at)} "
+            f"({int(now - checked_at)}s trước) - gõ lại sau {_STATUS_CACHE_TTL_SECONDS}s để ping mới.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    await update.message.reply_text("🔎 Đang kiểm tra provider-chain...")
+    text = await _build_status_text()
+    checked_at = time.time()
+    _status_cache = (checked_at, text)
+    await update.message.reply_text(
+        f"{text}\n\n<i>⏱️ Kiểm tra lúc {_fmt_epoch_vn(checked_at)}</i>",
+        parse_mode="HTML",
+    )
 
 @common.restricted
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
