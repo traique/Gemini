@@ -112,21 +112,59 @@ async def find_valid_symbols(text: str, limit: int = 3) -> list[str]:
                 if len(result) >= limit: break
     return result[:limit]
 
-ANALYSIS_KEYWORDS = [
+# Từ khoá thể hiện RÕ RÀNG ý muốn được phân tích/tư vấn. Nhóm này tự nó đã đủ
+# để kích hoạt pipeline phân tích đầy đủ.
+_STRONG_ANALYSIS_KEYWORDS = [
     "phân tích", "phan tich", "kỹ thuật", "ky thuat", "cơ bản", "co ban",
     "đánh giá", "danh gia", "nhận định", "nhan dinh", "khuyến nghị",
     "khuyen nghi", "tư vấn", "tu van", "nên mua", "nen mua", "nên bán",
     "nen ban", "có nên", "co nen", "triển vọng", "trien vong", "review",
     "so sánh", "so sanh", "dự báo", "du bao", "xu hướng", "xu huong",
     "định giá", "dinh gia", "dòng tiền", "dong tien",
-    "giờ sao", "gio sao", "xử lý sao", "xu ly sao", "làm sao", "lam sao",
-    "cắt lỗ", "cat lo", "chốt lời", "chot loi", "về bờ", "ve bo", 
-    "kẹt", "ket", "giữ hay bán", "giu hay ban", "nên giữ", "nen giu"
+    "xử lý sao", "xu ly sao", "cắt lỗ", "cat lo", "chốt lời", "chot loi",
+    "giữ hay bán", "giu hay ban", "nên giữ", "nen giu",
 ]
 
-def wants_full_analysis(text: str) -> bool:
-    lower = text.lower()
-    return any(kw in lower for kw in ANALYSIS_KEYWORDS)
+# Từ khoá YẾU: đứng một mình chúng là ngôn ngữ tâm sự đời thường ("kẹt xe",
+# "giờ sao anh", "làm sao bây giờ") nên chỉ được coi là yêu cầu phân tích khi
+# tin nhắn có thêm ngữ cảnh chứng khoán hoặc đã phát hiện được mã cổ phiếu.
+_WEAK_ANALYSIS_KEYWORDS = [
+    "giờ sao", "gio sao", "làm sao", "lam sao",
+    "kẹt", "ket", "về bờ", "ve bo",
+]
+
+# Giữ tên cũ cho code/test còn tham chiếu.
+ANALYSIS_KEYWORDS = _STRONG_ANALYSIS_KEYWORDS + _WEAK_ANALYSIS_KEYWORDS
+
+
+def _build_keyword_re(keywords: list[str]) -> re.Pattern[str]:
+    return re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(kw) for kw in keywords) + r")(?!\w)",
+        re.IGNORECASE,
+    )
+
+
+_STRONG_ANALYSIS_RE = _build_keyword_re(_STRONG_ANALYSIS_KEYWORDS)
+_WEAK_ANALYSIS_RE = _build_keyword_re(_WEAK_ANALYSIS_KEYWORDS)
+
+
+def wants_full_analysis(text: str, symbols: list[str] | None = None) -> bool:
+    """Người dùng có đang yêu cầu phân tích đầy đủ (thay vì chỉ hỏi giá)?
+
+    So khớp theo BIÊN TỪ chứ không phải substring. Trước đây hàm dùng
+    `kw in lower` nên "ket" khớp cả "kết quả", "kết nối", "market", "ticket",
+    làm bot chạy nguyên pipeline phân tích (nhiều request mạng + 1 lượt gọi
+    LLM) cho những câu chẳng liên quan.
+
+    Nhóm từ khoá yếu ("kẹt", "làm sao", "giờ sao", "về bờ") chỉ tính khi tin
+    nhắn có ngữ cảnh chứng khoán hoặc caller đã phát hiện được mã - truyền
+    `symbols` vào để dùng tín hiệu này.
+    """
+    if _STRONG_ANALYSIS_RE.search(text):
+        return True
+    if _WEAK_ANALYSIS_RE.search(text):
+        return bool(symbols) or _has_stock_context(text)
+    return False
 
 PRICE_KEYWORDS = ["giá", "gia", "price", "bao nhiêu", "bao nhieu"]
 _PRICE_KEYWORDS_RE = re.compile(r"\b(?:" + "|".join(re.escape(kw) for kw in PRICE_KEYWORDS) + r")\b", re.IGNORECASE)
@@ -204,10 +242,20 @@ async def _safe_fundamentals_prompt(symbol: str) -> str:
 def _trend_pct(closes: list[float]) -> float:
     return ((closes[-1] - closes[0]) / closes[0]) * 100 if closes and closes[0] else 0.0
 
-# Cùng bộ từ khoá lọc fact "danh mục" dùng bởi services/tools.py._tool_get_portfolio
-# và scheduler.py._build_portfolio_digest - giữ 1 tiêu chí duy nhất cho khái
-# niệm "fact nào được coi là thuộc danh mục đầu tư".
-_PORTFOLIO_FACT_KEYWORDS = ("danh_muc", "portfolio", "co_phieu")
+# NGUỒN DUY NHẤT cho khái niệm "fact nào được coi là thuộc danh mục đầu tư".
+# services/tools.py._tool_get_portfolio và scheduler.py._build_portfolio_digest
+# import lại từ đây thay vì tự khai báo bản copy riêng - trước đây có 3 bản
+# giống nhau, sửa 1 chỗ là 2 chỗ kia lệch ngay.
+PORTFOLIO_FACT_KEYWORDS = ("danh_muc", "portfolio", "co_phieu")
+
+# Alias giữ tương thích ngược cho code/test cũ còn tham chiếu tên private.
+_PORTFOLIO_FACT_KEYWORDS = PORTFOLIO_FACT_KEYWORDS
+
+
+def is_portfolio_fact(key: str) -> bool:
+    """Key của fact trong trí nhớ dài hạn có thuộc nhóm danh mục đầu tư không."""
+    return any(kw in key for kw in PORTFOLIO_FACT_KEYWORDS)
+
 
 async def _is_holding_symbol(user_id: int | None, symbol: str) -> bool:
     """Đoán user có đang giữ `symbol` không, dựa trên fact danh mục đã lưu
@@ -227,7 +275,7 @@ async def _is_holding_symbol(user_id: int | None, symbol: str) -> bool:
     return any(
         symbol_re.search(value)
         for key, value in facts
-        if any(kw in key for kw in _PORTFOLIO_FACT_KEYWORDS)
+        if is_portfolio_fact(key)
     )
 
 async def build_context(symbol: str, *, user_id: int | None = None, is_holding: bool | None = None) -> StockContext | None:
@@ -353,7 +401,7 @@ def _fallback_text(ctx: StockContext) -> str:
         price_line = f"Đang giữ, tín hiệu vẫn thuận lợi | Giá {_fmt_price(ctx.price)} | Tham khảo chốt lời {_fmt_price(d.target_price)} | Cân nhắc cắt lỗ dưới {_fmt_price(d.stop_price)} | R:R ~{d.rr_ratio}"
     elif d.action == "NO_TRADE": price_line = "Hệ thống chưa đủ edge để đề xuất vùng giá - ưu tiên đứng ngoài quan sát."
     else: price_line = f"Giá {_fmt_price(ctx.price)} | Chưa đủ rõ xu hướng để đề xuất vùng giá cụ thể"
-    
+
     lines = [
         f"📊 **{ctx.symbol}** — **{_fmt_price(ctx.price)} VND** ({ctx.fetched_at_vn})",
         f"Tín hiệu: **{action_label}** (confidence {d.confidence}, setup {d.setup_type}, regime {d.market_regime})",
@@ -403,7 +451,7 @@ async def analyze_portfolio(symbols: list[str], user_text: str, *, user_id: int 
         f"So sánh sức mạnh các mã, khuyên mã nào nên giữ/gồng lãi, mã nào vi phạm kỹ thuật cần hạ tỷ trọng/cắt lỗ. "
         f"Văn phong: Ngọt ngào, đồng cảm, xưng em/anh tự nhiên, rõ ràng."
     )
-    
+
     from ai import orchestrator
     try:
         response = await orchestrator.ask(prompt)
@@ -450,5 +498,5 @@ async def analyze_symbol(symbol: str, user_text: str = "", *, force_refresh: boo
 
     if not user_text:
         _cache_set(symbol, holding, result)
-        
+
     return result
