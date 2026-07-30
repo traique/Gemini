@@ -1,10 +1,10 @@
 """Scheduler nền (Bước 6 trong kế hoạch cải tiến - chủ động/proactive).
 
 Dùng lại đúng pattern background task đã có (`ai.orchestrator._cookie_probe_loop`
-+ `start_background_tasks()`): 1 asyncio.Task chạy vòng lặp vô hạn, khởi động
++ `start_background_tasks()`): 1 asyncio.Task chạy vòng lập vô hạn, khởi động
 từ `bot_app._post_init`.
 
-2 vòng lặp độc lập:
+2 vòng lập độc lập:
 - `_reminder_loop`: quét bảng `reminders` (xem core/database.py, services/tools.py - reminder được
   tạo qua function calling `set_reminder`) mỗi REMINDER_CHECK_INTERVAL_SEC
   giây, gửi các reminder đã tới hạn rồi đánh dấu đã gửi.
@@ -14,9 +14,9 @@ từ `bot_app._post_init`.
   nguồn dữ liệu thật dùng cho tra giá thủ công, không tự bịa số) rồi gửi
   digest. Không gửi gì nếu chưa ghi nhận danh mục nào (tránh spam tin rỗng).
 
-Cả 2 vòng lặp gửi tin qua 1 callback được đăng ký từ bot_app.py (cùng cơ chế
+Cả 2 vòng lập gửi tin qua 1 callback được đăng ký từ bot_app.py (cùng cơ chế
 với ai.provider_state.set_alert_callback, nhưng tách riêng module để không lẫn
-cảnh báo cookie chết/sống với thông báo chủ động cho người dùng).
+cảnh báo cookie chết/sống với thông báo chủ động cho người dùng.
 """
 import asyncio
 import logging
@@ -99,8 +99,10 @@ async def _build_portfolio_digest(user_id: int) -> Optional[str]:
     import stock_analysis  # import trễ để tránh vòng import lúc module load
 
     facts = await db.get_facts(user_id)
+    # Tiêu chí "fact nào thuộc danh mục" lấy từ stock_analysis để chỉ có 1
+    # nguồn duy nhất, thay vì copy cứng tuple từ khoá như trước đây.
     portfolio_text = " ".join(
-        v for k, v in facts if any(kw in k for kw in ("danh_muc", "portfolio", "co_phieu"))
+        v for k, v in facts if stock_analysis.is_portfolio_fact(k)
     )
     if not portfolio_text.strip():
         return None
