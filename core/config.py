@@ -12,8 +12,30 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 
+
+def _parse_allowed_user_id(raw: str) -> int:
+    """Parse ALLOWED_USER_ID thành int.
+
+    Không dùng str.isdigit() vì hai lý do: ID âm (chat/group ID của Telegram
+    có dạng -100...) bị coi là không hợp lệ nên bot báo "thiếu biến môi
+    trường" thay vì báo giá trị sai; và isdigit() trả True cho ký tự số
+    unicode như "²" trong khi int() lại ném ValueError, làm crash ngay lúc
+    import module thay vì báo lỗi cấu hình tử tế.
+    """
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "ALLOWED_USER_ID không phải số nguyên hợp lệ (nhận %r) — coi như chưa cấu hình.",
+            raw,
+        )
+        return 0
+
+
 _allowed_id_raw = os.getenv("ALLOWED_USER_ID", "0").strip()
-ALLOWED_USER_ID = int(_allowed_id_raw) if _allowed_id_raw.isdigit() else 0
+ALLOWED_USER_ID = _parse_allowed_user_id(_allowed_id_raw)
 
 # __Secure-1PSID: session token toàn quyền của tài khoản Google. KHÔNG log ra console/file.
 GEMINI_SECURE_1PSID = os.getenv("GEMINI_SECURE_1PSID", "").strip()
@@ -111,12 +133,20 @@ DAILY_DIGEST_HOUR_VN = _env_int("DAILY_DIGEST_HOUR_VN", 8)
 CHAT_SKILL_PATH = Path(os.getenv("CHAT_SKILL_PATH", "chat_skill.yaml").strip())
 _CHAT_SKILL_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "chat_skill_prompt.j2"
 
+# Jinja Environment dựng 1 lần ở module level (thay vì mỗi lần render), giống
+# cách stock_analysis.py compile template của nó. Environment tự cache template
+# đã compile bên trong.
+_CHAT_SKILL_ENV = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(_CHAT_SKILL_TEMPLATE_PATH.parent),
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
 
-def load_chat_skill() -> str:
-    """Nạp persona/rules cho chat tự nhiên. Định dạng mặc định là YAML có
-    cấu trúc (chat_skill.yaml), render qua templates/chat_skill_prompt.j2
-    thành system_instruction gửi cho Gemini. Nếu CHAT_SKILL_PATH trỏ tới
-    file .txt (cấu hình cũ), đọc thẳng làm văn bản để tương thích ngược."""
+_chat_skill_cache: str | None = None
+
+
+def _render_chat_skill() -> str:
+    """Đọc + render persona từ đĩa. Không cache — xem load_chat_skill()."""
     try:
         raw = CHAT_SKILL_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -127,11 +157,7 @@ def load_chat_skill() -> str:
 
     try:
         data = yaml.safe_load(raw)
-        template = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(_CHAT_SKILL_TEMPLATE_PATH.parent),
-            trim_blocks=True,
-            lstrip_blocks=True,
-        ).get_template(_CHAT_SKILL_TEMPLATE_PATH.name)
+        template = _CHAT_SKILL_ENV.get_template(_CHAT_SKILL_TEMPLATE_PATH.name)
         return template.render(
             p=data["persona"],
             tv=data["tone_of_voice"],
@@ -141,6 +167,26 @@ def load_chat_skill() -> str:
     except Exception:
         logger.exception("Lỗi parse/render chat_skill.yaml, dùng nội dung thô làm dự phòng.")
         return raw.strip()
+
+
+def load_chat_skill(force_reload: bool = False) -> str:
+    """Nạp persona/rules cho chat tự nhiên. Định dạng mặc định là YAML có
+    cấu trúc (chat_skill.yaml), render qua templates/chat_skill_prompt.j2
+    thành system_instruction gửi cho Gemini. Nếu CHAT_SKILL_PATH trỏ tới
+    file .txt (cấu hình cũ), đọc thẳng làm văn bản để tương thích ngược.
+
+    Kết quả được cache sau lần gọi đầu tiên. Hàm này nằm trên đường đi của
+    MọI tin nhắn chat (orchestrator.chat() và _get_or_create_chat_gem()), nên
+    nếu không cache thì mỗi tin nhắn đều phải đọc đĩa + parse YAML + dựng lại
+    Jinja Environment — toàn bộ đều là việc lặp lại vô ích vì persona là file
+    tĩnh, chỉ đổi khi deploy lại.
+
+    Truyền force_reload=True để bỏ cache và đọc lại từ đĩa.
+    """
+    global _chat_skill_cache
+    if _chat_skill_cache is None or force_reload:
+        _chat_skill_cache = _render_chat_skill()
+    return _chat_skill_cache
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
@@ -204,4 +250,14 @@ def validate(require_webhook: bool = False) -> None:
             "Thiếu biến môi trường bắt buộc: "
             + ", ".join(missing)
             + "\nXem hướng dẫn trong README.md"
+        )
+
+    # Cảnh báo (không chặn startup): thiếu SETTINGS_ENC_KEY thì core/crypto.py
+    # lưu thẳng plaintext vào bảng settings. Trước đây việc này diễn ra hoàn
+    # toàn âm thầm, dễ tưỏng cookie đã được mã hoá.
+    if not SETTINGS_ENC_KEY:
+        logger.warning(
+            "SETTINGS_ENC_KEY chưa được set: cookie __Secure-1PSIDTS sẽ được lưu "
+            "DẠNG PLAINTEXT trong bảng settings. Tạo khoá bằng: python -c "
+            "\"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
         )
