@@ -2,7 +2,7 @@
 và nhánh api1/api2 (ai/official_client.py) thành provider-chain có fallback,
 theo thứ tự core.config.PROVIDER_ORDER (mặc định cookie -> api1 -> api2).
 
-- Cookie chết -> chuyển hẳn sang API, KHÔNG thử lại cookie mỗi tin nhắn nữa.
+- Cookie chết -> chuyển hẳn sang API, KHÔNG thử lại cookie mọi tin nhắn nữa.
   Chỉ 3 cách quay lại cookie: probe nền định kỳ, seed env cookie mới, lệnh
   /usecookie (xem init_provider_state()/start_background_tasks()/try_cookie_now()).
 - api1 hết quota (429/ResourceExhausted) -> cooldown API_QUOTA_COOLDOWN_SEC rồi
@@ -60,7 +60,7 @@ async def _run_provider_chain(*, cookie_call, api_call, providers_override: Opti
     Search tool thật, xem ask(require_real_search=...)).
 
     - "cookie" trong order: bỏ qua nếu đã biết chết (cookie_dead_since is not
-      None) - không retry mỗi tin nhắn, chỉ probe nền/lệnh /usecookie mới
+      None) - không retry mọi tin nhắn, chỉ probe nền/lệnh /usecookie mới
       thử lại.
     - "apiN" trong order: bỏ qua nếu đang cooldown quota; 429 -> đánh dấu
       cooldown rồi thử provider kế trong order.
@@ -205,7 +205,7 @@ async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: s
     """Chat tự nhiên (persona Lan Anh) qua provider-chain.
     - Cookie: ChatSession (gemini-webapi) - Google giữ lịch sử phía họ. Vì
       lịch sử được Google lưu vĩnh viễn cho session, memory_context (trí nhớ
-      dài hạn, không đổi trong phiên) chỉ chèn vào LƯỢT ĐẦU TIÊN của mỗi
+      dài hạn, không đổi trong phiên) chỉ chèn vào LƯmathỢT ĐẦU TIÊN của mỗi
       phiên mới; grounding (giá thực tế, đổi liên tục) chèn ở MỌI lượt.
     - API (api1/api2): stateless, nên memory_context/grounding + lịch sử
       cửa sổ trượt (core.database.get_session_messages()) được nạp lại ở MỌI lượt.
@@ -278,11 +278,34 @@ async def analyze_image(instruction: str, image_path: str):
 async def check_cookie_status() -> tuple[bool, str]:
     """Xác nhận cookie còn dùng được thật với server, không chỉ kiểm tra
     client đã init trong RAM (cookie_client.get_client() có thể trả về client
-    cache dù cookie đã hết hạn phía Google)."""
-    try:
+    cache dù cookie đã hết hạn phía Google).
+
+    BẮT BUỘC bọc _run_with_call_timeout: hàm này được gọi từ
+    _cookie_probe_loop() và try_cookie_now(), cả hai đều chạy BÊN TRONG
+    `async with call_lock`. Nếu để ping treo mạng không giới hạn thời gian,
+    call_lock bị giữ tới vài phút và MỌI tin nhắn chat của user đứng im -
+    không lỗi, không log, rất khó truy nguyên.
+
+    get_client() cũng nằm trong phạm vi timeout vì bước init cookie client
+    có thể treo y như bước generate_content().
+
+    Không bao giờ raise: luôn trả (ok, detail) để _cookie_probe_loop không chết.
+    """
+
+    async def _ping():
         client = await cookie_client.get_client()
         await client.generate_content("ping")
+
+    try:
+        await _run_with_call_timeout(_ping)
         return True, "OK"
+    except asyncio.TimeoutError:
+        # Phải bắt TRƯỚC `except Exception` vì TimeoutError là subclass của nó.
+        logger.warning(
+            "Probe cookie quá %ss -> coi như cookie chưa dùng được (nhả call_lock ngay).",
+            _CALL_TIMEOUT_SEC,
+        )
+        return False, f"TimeoutError: ping cookie quá {_CALL_TIMEOUT_SEC}s"
     except Exception as e:
         # Không gọi reset_client() ở đây để tránh phá state của các request
         # khác đang chạy song song một cách không cần thiết.
@@ -309,7 +332,7 @@ async def try_cookie_now() -> tuple[bool, str]:
         return ok, detail
 
 
-# ─── Probe nền tự quay về cookie ───────────────────────────────────────────
+# ─── Probe nền tự quay về cookie ────────────────────────────────
 _probe_task: Optional[asyncio.Task] = None
 
 
