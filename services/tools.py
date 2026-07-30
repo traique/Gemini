@@ -137,6 +137,12 @@ async def maybe_run_tool(user_id: int, user_text: str) -> Optional[str]:
     giúp Gemini biết tool đã chạy và kết quả ra sao khi soạn câu trả lời tự
     nhiên). Trả về None nếu không cần tool, hoặc lỗi/chưa cấu hình API key
     (graceful - KHÔNG được raise, không được làm gián đoạn chat chính)."""
+    # Khởi tạo TRƯỚC block try: nếu chính generate_utility_json() raise
+    # TypeError thì block `except TypeError` bên dưới vẫn cần đọc được 2 biến
+    # này. Nếu để chúng chỉ được gán bên trong try, except sẽ ném
+    # UnboundLocalError và lỗi gốc biến mất hoàn toàn (không log, không traceback).
+    tool_name = "?"
+    args: dict = {}
     try:
         data = await official_client.generate_utility_json(_build_router_prompt(user_text))
         if not data:
@@ -159,6 +165,7 @@ async def maybe_run_tool(user_id: int, user_text: str) -> Optional[str]:
             "Lỗi TypeError khi chạy tool '%s' (có thể do Gemini truyền sai args). Args: %s",
             tool_name,
             args,
+            exc_info=True,
         )
         return None
     except Exception:
