@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import stock_analysis
 from core import database as db
 from ai import official_client
 
@@ -105,8 +106,10 @@ async def _tool_set_reminder(user_id: int, message: str = "", minutes_from_now: 
 
 async def _tool_get_portfolio(user_id: int) -> str:
     facts = await db.get_facts(user_id)
+    # Tiêu chí "fact nào thuộc danh mục" lấy từ stock_analysis để chỉ có 1
+    # nguồn duy nhất, thay vì copy cứng tuple từ khoá như trước đây.
     portfolio_facts = [
-        f"{k}: {v}" for k, v in facts if any(kw in k for kw in ("danh_muc", "portfolio", "co_phieu"))
+        f"{k}: {v}" for k, v in facts if stock_analysis.is_portfolio_fact(k)
     ]
     if not portfolio_facts:
         return "Chưa ghi nhận danh mục đầu tư nào trong trí nhớ dài hạn."
