@@ -76,17 +76,40 @@ def _has_stock_context(text: str) -> bool:
     return any(kw in lower for kw in _STOCK_CONTEXT_KEYWORDS)
 
 
+_BARE_SYMBOL_MSG_RE = re.compile(r"^[A-Za-z]{3,4}$")
+
+
+def is_bare_symbol_message(text: str) -> bool:
+    """Tin nhắn chỉ gồm ĐÚNG một token 3-4 chữ cái, không gì khác.
+
+    Đây là tín hiệu tra mã mạnh nhất mà không cần tới cách viết hoa. Lý do
+    phải tách riêng khỏi rào "viết HOA nguyên bản": bàn phím di động tự viết
+    hoa chữ đầu tin nhắn, nên người dùng gõ "gvr" thì cái Telegram gửi đi là
+    "Gvr" - trượt _UPPERCASE_TOKEN_RE, trượt luôn cả ngữ cảnh chứng khoán
+    (tin nhắn có mỗi 3 chữ cái thì lấy đâu ra ngữ cảnh). Kết quả là đường
+    nhập liệu phổ biến NHẤT lại là đường duy nhất không nhận ra mã, và câu
+    hỏi rơi xuống Gemini để bị trả lời bằng giá bịa.
+
+    Trong bối cảnh bot này (một người dùng duy nhất, chơi chứng khoán), một
+    tin nhắn trơ trọi 3-4 chữ cái gần như chắc chắn là mã. Chi phí trường hợp
+    xấu nhất là 1 request verify tới DNSE (đã cache 24h).
+    """
+    return bool(_BARE_SYMBOL_MSG_RE.match(text.strip()))
+
+
 def detect_symbol_candidates(text: str) -> tuple[list[str], list[str]]:
     tokens = _SYMBOL_TOKEN_RE.findall(text)
     uppercase_tokens = set(_UPPERCASE_TOKEN_RE.findall(text))
     known, unverified = [], []
     seen = set()
     stock_context = _has_stock_context(text)
+    bare_symbol_msg = is_bare_symbol_message(text)
     # Tin nhắn có tín hiệu rõ ràng là đang nói chuyện cổ phiếu ("cổ phiếu",
-    # "mã", "phân tích") hoặc đang hỏi giá -> chấp nhận cả token viết thường
-    # làm ứng viên mã. _PRICE_KEYWORDS_RE khai báo phía dưới trong module,
-    # chỉ resolve lúc gọi hàm nên không lỗi thứ tự.
-    allow_lowercase = stock_context or bool(_PRICE_KEYWORDS_RE.search(text))
+    # "mã", "phân tích"), đang hỏi giá, hoặc chỉ gồm đúng 1 token dạng mã
+    # -> chấp nhận cả token viết thường làm ứng viên mã. _PRICE_KEYWORDS_RE
+    # khai báo phía dưới trong module, chỉ resolve lúc gọi hàm nên không lỗi
+    # thứ tự.
+    allow_lowercase = stock_context or bool(_PRICE_KEYWORDS_RE.search(text)) or bare_symbol_msg
 
     for m in _INDEX_NAME_RE.finditer(text):
         norm = _normalize_index_name(m.group(0))
@@ -99,11 +122,14 @@ def detect_symbol_candidates(text: str) -> tuple[list[str], list[str]]:
         if upper in seen: continue
         seen.add(upper)
         if upper in ALL_KNOWN_SYMBOLS or upper == "VNINDEX":
-            if upper in _AMBIGUOUS_KNOWN and not (tok in uppercase_tokens or stock_context):
+            if upper in _AMBIGUOUS_KNOWN and not (tok in uppercase_tokens or stock_context or bare_symbol_msg):
                 # mã trùng từ tiếng Việt/tiếng Anh thông dụng ("gas", "vnd"...)
-                # - chỉ nhận khi viết HOA nguyên bản hoặc tin nhắn có keyword
-                # chứng khoán, tránh bot trả nhầm giá cổ phiếu cho câu hỏi
-                # không liên quan.
+                # - chỉ nhận khi viết HOA nguyên bản, tin nhắn có keyword
+                # chứng khoán, hoặc tin nhắn chỉ gồm đúng token đó; tránh bot
+                # trả nhầm giá cổ phiếu cho câu hỏi không liên quan.
+                # bare_symbol_msg là bắt buộc ở đây: "Oil" trơ trọi từng bị
+                # loại rồi rơi xuống Gemini và bị trả lời bằng giá dầu Brent/WTI
+                # bịa hoàn toàn, trong khi "OIL" lại ra đúng giá cổ phiếu PVOIL.
                 continue
             known.append(upper)
         else:
@@ -113,8 +139,9 @@ def detect_symbol_candidates(text: str) -> tuple[list[str], list[str]]:
             # hoàn toàn - find_valid_symbols trả rỗng, câu hỏi rơi xuống
             # Gemini không kèm grounding và bị trả lời bằng giá bịa.
             # Nay token viết thường cũng được nhận, nhưng chỉ khi tin nhắn có
-            # ngữ cảnh chứng khoán/hỏi giá (allow_lowercase) để token thường
-            # từ tiếng Việt không dấu không tràn vào đây.
+            # ngữ cảnh chứng khoán/hỏi giá/là tin nhắn trơ trọi dạng mã
+            # (allow_lowercase) để token thường từ tiếng Việt không dấu không
+            # tràn vào đây.
             is_upper = tok in uppercase_tokens
             if not (is_upper or allow_lowercase):
                 continue
@@ -212,10 +239,17 @@ def looks_like_price_question(text: str) -> bool:
     số nghe hợp lý rồi trình bày như số liệu thật. Thà trả lời "không tra
     được mã" còn hơn trả lời sai số.
 
-    Chỉ trả True khi có keyword giá VÀ còn ít nhất một token 3-4 ký tự trông
-    giống mã (không nằm trong các list từ thông dụng) - để "giá vàng hôm nay
-    bao nhiêu" vẫn đi tiếp xuống chat bình thường.
+    Hai trường hợp được chặn:
+    1. Tin nhắn trơ trọi dạng mã (vd "Xyz") mà DNSE không xác nhận - người
+       dùng rõ ràng đang tra mã, gõ nhầm hoặc mã không tồn tại.
+    2. Có keyword giá VÀ còn ít nhất một token 3-4 ký tự trông giống mã
+       (không nằm trong các list từ thông dụng) - để "giá vàng hôm nay bao
+       nhiêu" vẫn đi tiếp xuống chat bình thường.
     """
+    if is_bare_symbol_message(text):
+        upper = text.strip().upper()
+        if upper not in _COMMON_WORD_EXCLUDE and upper not in _LOWERCASE_NOISE_EXCLUDE:
+            return True
     if not _PRICE_KEYWORDS_RE.search(text):
         return False
     for tok in _SYMBOL_TOKEN_RE.findall(text):
@@ -225,9 +259,69 @@ def looks_like_price_question(text: str) -> bool:
         return True
     return False
 
+
+# Dữ liệu thị trường KHÔNG thuộc sàn chứng khoán VN: bot không có provider nào
+# cho nhóm này (stock_providers.py chỉ nói chuyện với DNSE), nên nếu để câu hỏi
+# đi thẳng vào chat thường, LLM sẽ tự dựng số liệu và cả sự kiện thời sự kèm
+# theo. Phát hiện được thì ép nhánh có Google Search thật + chỉ thị cấm bịa
+# (xem ai/orchestrator.chat(require_real_search=True)).
+_EXTERNAL_MARKET_KEYWORDS = [
+    "dầu", "dau tho", "dầu thô", "brent", "wti", "opec",
+    "vàng", "vang sjc", "sjc", "gold", "kim loại quý",
+    "tỷ giá", "ty gia", "usd", "eur", "jpy", "yên nhật", "nhân dân tệ",
+    "bitcoin", "btc", "eth", "ethereum", "crypto", "tiền số", "tien so",
+    "dow jones", "nasdaq", "s&p", "sp500", "nikkei", "hang seng",
+    "chứng khoán mỹ", "chung khoan my", "phố wall", "pho wall",
+    "fed", "lãi suất", "lai suat", "lạm phát", "lam phat",
+]
+_EXTERNAL_MARKET_RE = _build_keyword_re(_EXTERNAL_MARKET_KEYWORDS)
+
+
+def wants_external_market_data(text: str) -> bool:
+    """Câu hỏi có đang cần số liệu/sự kiện thị trường ngoài sàn VN không?"""
+    return bool(_EXTERNAL_MARKET_RE.search(text))
+
+
+# Giờ giao dịch HOSE/HNX/UPCOM: T2-T6, 9h00-15h00 (gộp cả nghỉ trưa cho đơn
+# giản - mục đích duy nhất ở đây là gắn nhãn hiển thị, không phải khớp lệnh).
+# Không xử lý ngày lễ: hôm lễ sẽ không có tick nào của "hôm nay" nên
+# providers.fetch_quote() trả is_realtime=False sẵn.
+_MARKET_OPEN_MINUTE = 9 * 60
+_MARKET_CLOSE_MINUTE = 15 * 60
+
+
+def is_market_hours(now: datetime | None = None) -> bool:
+    now = now or datetime.now(_VN_TZ)
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return _MARKET_OPEN_MINUTE <= minutes <= _MARKET_CLOSE_MINUTE
+
+
+def _quote_time_note(q: providers.Quote, *, verbose: bool) -> str:
+    """Nhãn thời điểm cho một Quote.
+
+    providers.Quote.is_realtime chỉ có nghĩa "giá này lấy từ tick API của hôm
+    nay", KHÔNG có nghĩa "thị trường đang khớp lệnh lúc này". Tick cuối phiên
+    vẫn nằm đó suốt đêm, nên nếu gắn cứng nhãn "khớp lệnh realtime" theo cờ
+    này thì lúc 23h35 bot vẫn báo "khớp lệnh realtime lúc 23:35" trong khi sàn
+    đóng cửa từ 15h - vừa sai, vừa mâu thuẫn với chính phần văn bản do LLM
+    sinh ra ngay bên dưới ("thị trường đã đóng cửa rồi anh ha").
+    """
+    if q.is_realtime and is_market_hours():
+        if verbose:
+            return f"khớp lệnh realtime lúc {datetime.now(_VN_TZ).strftime('%H:%M ngày %d/%m/%Y')} giờ VN"
+        return "khớp lệnh realtime"
+    if q.is_realtime:
+        return f"giá khớp cuối phiên {q.date}" if q.date else "giá khớp cuối phiên gần nhất"
+    if q.date:
+        return f"giá đóng cửa phiên gần nhất ({q.date})" if verbose else f"đóng cửa phiên {q.date}"
+    return "giá đóng cửa phiên gần nhất" if verbose else "đóng cửa phiên gần nhất"
+
+
 def format_quote_message(q: providers.Quote) -> str:
     arrow, sign = ("🟢▲", "+") if q.change > 0 else ("🔴▼", "") if q.change < 0 else ("⚪", "")
-    time_note = f"khớp lệnh realtime lúc {datetime.now(_VN_TZ).strftime('%H:%M ngày %d/%m/%Y')} giờ VN" if q.is_realtime else f"giá đóng cửa phiên gần nhất ({q.date})" if q.date else "giá đóng cửa phiên gần nhất"
+    time_note = _quote_time_note(q, verbose=True)
     return f"📊 **{q.symbol}**: **{_fmt_price(q.price)} VND** ({time_note})\n{arrow} {sign}{_fmt_price(q.change)} ({sign}{q.change_pct}%) so với phiên trước ({_fmt_price(q.prev_close)} VND)"
 
 async def quick_quote(symbol: str) -> str:
@@ -243,7 +337,7 @@ async def build_price_grounding(symbols: list[str]) -> str:
     lines = []
     for sym, res in zip(subset, results):
         if isinstance(res, BaseException) or res is None: continue
-        time_note = "khớp lệnh realtime" if res.is_realtime else (f"đóng cửa phiên {res.date}" if res.date else "đóng cửa phiên gần nhất")
+        time_note = _quote_time_note(res, verbose=False)
         sign = "+" if res.change > 0 else ""
         lines.append(f"- {sym}: {_fmt_price(res.price)} VND ({time_note}), {sign}{_fmt_price(res.change)} ({sign}{res.change_pct}%) so với phiên trước ({_fmt_price(res.prev_close)} VND)")
     if not lines: return ""
@@ -347,7 +441,7 @@ async def build_context(symbol: str, *, user_id: int | None = None, is_holding: 
     analysis_price = symbol_series.price
     realtime_quote_line = None
     if quote is not None:
-        time_note = "khớp lệnh realtime" if quote.is_realtime else (f"đóng cửa phiên {quote.date}" if quote.date else "đóng cửa phiên gần nhất")
+        time_note = _quote_time_note(quote, verbose=False)
         realtime_quote_line = f"Giá khớp hiện tại: {_fmt_price(quote.price)} VND ({time_note}) - CHỈ tham khảo hiển thị, KHÔNG dùng để tính stop/target/R:R bên dưới."
     news_impact = providers.calc_news_impact(news)
     stats = feat.calc_signal_stats(symbol_series.closes, symbol_series.volumes, analysis_price)
