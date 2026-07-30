@@ -88,7 +88,6 @@ gemini-telegram-bot/
 ├── messages.py                # Chuỗi thông báo UI/cảnh báo dùng chung
 ├── stock_analysis.py          # Orchestrator: fetch -> validate -> feature -> policy -> prompt
 ├── stock_features.py          # Feature layer thuần toán (RSI/MACD/ADX/ATR/Donchian/Bollinger)
-├── stock_indicators.py        # Chỉ báo kỹ thuật bổ sung
 ├── stock_validation.py        # Đánh giá chất lượng dữ liệu OHLCV
 ├── stock_policy.py            # Policy layer: gate quyết định action (bao gồm NO_TRADE)
 ├── stock_backtest.py          # Backtest walk-forward tối thiểu cho tín hiệu BUY
@@ -101,7 +100,7 @@ gemini-telegram-bot/
 │   ├── stock_analysis_prompt.j2
 │   └── chat_skill_prompt.j2
 ├── chat_skill.yaml              # Persona/rules/tone cho chat tự nhiên (có cấu trúc)
-├── tests/                       # Unit test (pytest, chạy bằng mock)
+├── test/                        # Unit test (pytest, chạy bằng mock)
 ├── .github/workflows/keep-alive.yml  # Cron ping giữ Render không ngủ
 ├── render.yaml                  # Blueprint Render
 ├── requirements.txt
@@ -319,7 +318,7 @@ giữ).
 | `/forget` | Xoá trí nhớ dài hạn (không ảnh hưởng phiên hiện tại) |
 | `/notes` | Xem ghi chú đã lưu qua function calling |
 | `/model` | Xem/đổi model dùng cho chat (`/model pro`, `/model auto`) |
-| `/status` | Xem provider đang dùng, cooldown quota, cấu hình trí nhớ |
+| `/status` | Xem provider đang dùng, cooldown quota, cấu hình trí nhớ (kết quả được cache 90 giây) |
 | `/usecookie` | Ép thử lại cookie ngay sau khi dán cookie mới |
 | `/help` | Hiển thị hướng dẫn |
 
@@ -338,7 +337,7 @@ lệnh riêng.
 | Bot báo lỗi chat nhưng `/diagnose` báo `init()` OK | `__Secure-1PSIDTS` đã cũ do đăng nhập lại `gemini.google.com` trên trình duyệt sau khi copy cookie. Lấy cookie mới, dán ngay, không thao tác gì thêm trên tab đăng nhập đó. |
 | Không rõ câu trả lời từ cookie hay API | Gõ `/status`, hoặc xem [Provider-chain](#provider-chain-cookie--api1--api2). |
 | Đã điền API key nhưng provider-chain không chuyển khi cookie lỗi | Xem log dòng `Cookie Gemini lỗi hoặc treo quá ...s`; kiểm tra key/quota/`GOOGLE_AI_STUDIO_MODEL`, hoặc gõ `/status`. |
-| UptimeRobot báo "Down \| 405" | Kiểm tra URL monitor đúng domain — route `/` đã hỗ trợ cả GET/HEAD. |
+| UptimeRobot báo "Down \\| 405" | Kiểm tra URL monitor đúng domain — route `/` đã hỗ trợ cả GET/HEAD. |
 | Tin nhắn đầu sau 1 lúc không dùng bị chậm | Service đang cold start trên Render, đợi ~30-60s. |
 | `/history` báo lỗi kết nối DB | Kiểm tra `DATABASE_URL`, đảm bảo Supabase project chưa bị pause (tự pause sau ~1 tuần không hoạt động ở gói free). |
 
@@ -346,10 +345,10 @@ lệnh riêng.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/ -v
+pytest test/ -v
 ```
 
 Toàn bộ test chạy bằng mock, không cần Postgres/API key thật — bao gồm
 provider-chain (chuyển đổi cookie/api1/api2, cooldown quota), trí nhớ dài
 hạn, router function calling, các lớp phân tích cổ phiếu (validation,
-policy, backtest, indicators), và handler Telegram.
+policy, backtest), và handler Telegram.
