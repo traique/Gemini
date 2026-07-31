@@ -193,33 +193,38 @@ HELP_TEXT = (
     "/help — hiển thị hướng dẫn này"
 )
 
-TEXT_PROMPT_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" and HYPER-REALISTIC prompts. The goal is to generate images that look like real, candid, unretouched photographs, avoiding any "AI-generated", plasticky, or overly polished aesthetic.
+TEXT_PROMPT_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" prompts that fully specify the framing, the pose and the visual finish, not just the subject and the scene.
 
 Based on the user's basic description, write ONE complete, ready-to-use English prompt following EXACTLY this structure and style (this is a NEUTRAL example showing the expected format, level of detail and how to name the subject - match its structure, but invent NEW content taken from the user's description):
 
 ---
-{identity_lock_block}Raw, candid smartphone photo of {subject_phrase} standing on a quiet residential sidewalk in the late afternoon. She is looking slightly off-camera with a natural, unposed expression, one hand resting on the strap of her shoulder bag.
+{identity_lock_block}Raw, candid smartphone photo of {subject_phrase} standing on a quiet residential sidewalk in the late afternoon. Vertical 9:16 portrait orientation, three-quarter body shot framed from mid-thigh up, camera held at the subject's chest height and perfectly level with her, roughly two metres away, so she fills most of the frame height with only a little headroom.
+
+Her arms hang relaxed and almost straight down at her sides, elbows barely bent, both hands at hip height with the palms turned inwards towards her thighs. Her weight rests on her left leg, her shoulders are square to the camera, her head is tilted very slightly to her right with the chin level, and she looks a little off-camera. Her lips are closed in a small natural smile, and a few loose strands of hair fall across her cheek.
 
 She is wearing a plain oversized grey cotton t-shirt and simple straight-leg jeans, with natural fabric folds and everyday creases.
 
-The background is an ordinary street with a low garden wall and parked cars, softly out of focus.
+The background is an ordinary street with a low garden wall and parked cars, moderately out of focus.
 
-Shot on iPhone 15 Pro Max camera, unedited, unretouched. 35mm lens, f/1.8.
+Shot on an iPhone 15 Pro Max, 48mm-equivalent lens at f/1.8, matching the plain everyday snapshot look of this scene.
 
-Soft, warm late-afternoon daylight. Natural skin texture, visible pores, slight skin imperfections. Subtle chromatic aberration, fine film grain. Authentic, raw, documentary photography style, zero airbrushing.
+Soft, warm late-afternoon daylight. Natural skin texture with visible pores and slight imperfections. Subtle chromatic aberration, fine film grain. Authentic, raw, documentary photography style.
 ---
 
-⚠️ The example above demonstrates FORMAT, PHOTOGRAPHY STYLE and HOW TO NAME THE SUBJECT only. The scene, setting, outfit, pose, lighting and mood MUST be derived entirely from the user's description below, NOT copied from the example. Do NOT reuse the sidewalk, the grey t-shirt, the jeans or the late-afternoon light unless the user's description actually calls for them.
+⚠️ The example above demonstrates FORMAT, LEVEL OF DETAIL and HOW TO NAME THE SUBJECT only. The framing, pose, scene, setting, outfit, lighting, lens and finish MUST all come from the user's description below, NOT from the example. Do NOT reuse the sidewalk, the grey t-shirt, the jeans, the 48mm lens or the late-afternoon light unless the user's description actually calls for them.
 
 Rules for what you generate:
 {identity_rule}
 {subject_rule}
-3. ACCURATELY describe the outfit, accessories, pose, framing and vibe based on the user's description.
-4. LIGHTING AND GRAIN MUST MATCH THE SCENE the user describes. Only write "low-light noise" for a genuine night or dim indoor scene; for daylight, overcast or bright indoor scenes write the correct light and use "fine film grain" or "subtle sensor noise" instead. Contradictory lighting terms make the result look wrong.
-5. DO NOT append any tool-specific flags or parameters such as "--ar 4:5", "--v 6", "--style raw" or "::". These belong to other tools and are meaningless here; if the aspect ratio matters, describe the framing in plain words (e.g. "vertical portrait framing").
-6. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless", "editorial", or "studio lighting".
-7. MANDATORY WORDS: ALWAYS include photography terms that add realism and imperfection, such as "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting", or specific camera models (e.g., "Shot on Kodak Portra 400", "Polaroid", "iPhone snapshot").
-8. Output ONLY the final prompt as plain text, no markdown headers, no preamble.
+3. ACCURATELY describe the outfit, accessories and vibe based on the user's description.
+4. FRAMING IS MANDATORY - never omit it. In the first paragraph you MUST state, in plain words: (a) the orientation and aspect ratio, written out as "vertical 9:16 portrait orientation", "vertical 4:5 portrait orientation", "square 1:1 framing" or "horizontal 16:9 landscape orientation"; (b) the shot size (extreme close-up, head-and-shoulders portrait, waist-up, three-quarter body, full body, or wide environmental shot); (c) the camera height and angle (at eye level, at chest height, low angle looking up, high angle looking down); (d) roughly how far the camera is from the subject; and (e) how much of the frame the subject occupies and how much headroom there is. Follow the user's description when it says anything about framing; when it does not, choose sensibly - a vertical 9:16 portrait orientation with the person filling most of the frame for a shot of a person, and a horizontal orientation only for a landscape or a wide scene. A generator given no framing information defaults to a wide horizontal image with a small, distant subject, which is almost never what the user wants.
+5. POSE MUST BE GEOMETRICALLY PRECISE - vague phrases such as "arms outstretched", "posing naturally" or "hands out" get misread ("arms outstretched with open palms" is commonly rendered as a shrug with bent elbows and palms up at shoulder height). Devote a short paragraph to the body and state: the angle of each arm relative to the torso, whether each elbow is straight or bent, the height of each hand (hip, waist, chest, shoulder, above the head), which way each palm faces, what the hands are touching or holding, the stance and weight distribution, the shoulder and torso rotation, the head tilt and chin height, the direction of the gaze, whether the mouth is closed or open, and how the hair falls or is blown. Invent plausible specifics that fit the user's description rather than leaving any of these vague.
+6. LIGHTING AND GRAIN MUST MATCH THE SCENE the user describes. Only write "low-light noise" for a genuine night or dim indoor scene; for daylight, overcast or bright indoor scenes write the correct light and use "fine film grain" or "subtle sensor noise" instead. Contradictory lighting terms make the result look wrong.
+7. CAMERA AND LENS MUST MATCH THE SHOT YOU ARE DESCRIBING, never copied from the example. A tight portrait with a compressed, strongly blurred background implies a longer lens (roughly 70-135mm equivalent at a wide aperture); a normal half-body shot implies around 40-55mm; only a deliberately wide, environment-heavy shot implies 24-35mm. State the focal length and aperture that match, and describe the depth of field (background strongly blurred, softly blurred, or mostly sharp). A wide focal length pushes the subject away and shrinks them in the frame, so do not use one for a close portrait.
+8. THE FINISH MUST MATCH THE LOOK THE USER ASKS FOR, and this overrides any default preference for raw photography. If the user wants an ordinary unpolished snapshot, use terms like "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting". If instead the user asks for something polished, glamorous, dreamy, cinematic or social-media styled, say so plainly: "softly retouched", "smooth luminous skin", "gentle beauty-filter finish", "rich saturated colour", "strong creamy background blur", and in that case you MUST NOT write "visible pores", "unretouched", "skin imperfections" or "zero airbrushing", because those terms fight the requested look. Whichever branch you choose, always keep the shot reading as a real photograph.
+9. DO NOT append any tool-specific flags or parameters such as "--ar 4:5", "--v 6", "--style raw" or "::". These belong to other tools and are meaningless here; the aspect ratio belongs in the framing sentence required by rule 4, written in plain words.
+10. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless" or "editorial". These are empty booster words and make the image look fake.
+11. Output ONLY the final prompt as plain text, no markdown headers, no preamble.
 
 User's basic description: {user_desc}"""
 
@@ -500,14 +505,14 @@ async def _build_status_text() -> str:
 
     cookie_line = "✅ Cookie Gemini: OK" if cookie_ok else f"❌ Cookie Gemini: lỗi ({html.escape(cookie_detail)})"
     if state["cookie_dead_since"]:
-        cookie_line += f"\n   ⥄ chết lúc {_fmt_epoch_vn(state['cookie_dead_since'])}"
+        cookie_line += f"\n   ⥅ chết lúc {_fmt_epoch_vn(state['cookie_dead_since'])}"
 
     def _api_line(idx, key, status, exhausted_until):
         if not key: return f"⚪ API {idx}: chưa cấu hình"
         ok, detail = status
         line = f"✅ API {idx}: OK" if ok else f"❌ API {idx}: lỗi ({html.escape(detail)})"
         if exhausted_until > now:
-            line += f"\n   ⥄ cooldown tới {_fmt_epoch_vn(exhausted_until)}"
+            line += f"\n   ⥅ cooldown tới {_fmt_epoch_vn(exhausted_until)}"
         return line
 
     api1_line = _api_line(1, config.GOOGLE_AI_STUDIO_API_KEY_1, api1_status, state["api1_exhausted_until"])
