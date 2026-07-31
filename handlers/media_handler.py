@@ -74,9 +74,9 @@ def _short_error(exc: BaseException) -> str:
 # ---------------------------------------------------------------------------
 # Dạng 1 (không từ khoá, gồm cả ảnh không caption): không có dòng lock.
 _PHOTO_IDENTITY_RULE_NONE = (
-    "1. DO NOT include an \\"[Identity Lock: ...]\\" line at all, under any "
-    "circumstances. Start the prompt directly with the scene description, "
-    "even if the reference image clearly contains a person or a face."
+    '1. DO NOT include an "[Identity Lock: ...]" line at all, under any '
+    'circumstances. Start the prompt directly with the scene description, '
+    'even if the reference image clearly contains a person or a face.'
 )
 
 # ---------------------------------------------------------------------------
@@ -104,17 +104,17 @@ _SUBJECT_PHRASE_REFERENCE = "the subject from the attached reference image"
 # Rule 2 - khuôn mặt lấy từ đâu và tả như thế nào
 # ---------------------------------------------------------------------------
 _PHOTO_SUBJECT_RULE_DESCRIBED = (
-    "2. CRITICAL - this prompt will be pasted as PLAIN TEXT with NO image "
-    "attached. Therefore you must NEVER write \\"the subject from the reference "
-    "image\\", \\"the person in the photo\\", or any phrase pointing at an image: "
-    "with nothing attached such a phrase is empty and the generator will "
-    "invent a random face. Instead REPLACE the subject with a dense written "
-    "description of the person you actually see in the reference image, so "
-    "that the prompt reproduces them on its own. You MUST state all of: "
-    "approximate age, ethnicity or facial character, face shape, eye shape and "
-    "eye colour, eyebrow shape, nose shape, lip shape, jawline and chin, skin "
-    "tone and skin texture, and hair colour, length, texture and parting. Put "
-    "this description in the very first sentence, exactly like the example."
+    '2. CRITICAL - this prompt will be pasted as PLAIN TEXT with NO image '
+    'attached. Therefore you must NEVER write "the subject from the reference '
+    'image", "the person in the photo", or any phrase pointing at an image: '
+    'with nothing attached such a phrase is empty and the generator will '
+    'invent a random face. Instead REPLACE the subject with a dense written '
+    'description of the person you actually see in the reference image, so '
+    'that the prompt reproduces them on its own. You MUST state all of: '
+    'approximate age, ethnicity or facial character, face shape, eye shape and '
+    'eye colour, eyebrow shape, nose shape, lip shape, jawline and chin, skin '
+    'tone and skin texture, and hair colour, length, texture and parting. Put '
+    'this description in the very first sentence, exactly like the example.'
 )
 _PHOTO_SUBJECT_RULE_GIRL = (
     "2. CRITICAL - the face is FIXED by the Identity Lock above and must be "
@@ -128,13 +128,13 @@ _PHOTO_SUBJECT_RULE_GIRL = (
     "from the reference image."
 )
 _PHOTO_SUBJECT_RULE_REFERENCE = (
-    "2. CRITICAL - the user will attach the reference photo together with this "
-    "prompt, so the identity is carried by that attachment. Refer to the "
-    "subject as \\"the subject from the attached reference image\\" and state "
-    "that her face must match the attached photo exactly. DO NOT invent "
-    "concrete facial features (eye colour, face shape, nose or lip shape, hair "
-    "colour): inventing them fights the attached photo and changes the face. "
-    "Describe only pose, expression, outfit, setting and lighting."
+    '2. CRITICAL - the user will attach the reference photo together with this '
+    'prompt, so the identity is carried by that attachment. Refer to the '
+    'subject as "the subject from the attached reference image" and state '
+    'that her face must match the attached photo exactly. DO NOT invent '
+    'concrete facial features (eye colour, face shape, nose or lip shape, hair '
+    'colour): inventing them fights the attached photo and changes the face. '
+    'Describe only pose, expression, outfit, setting and lighting.'
 )
 
 IMAGE_ANALYZE_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" prompts that reproduce a reference photograph as closely as possible: the same framing, the same pose and the same visual finish, not just the same person.
