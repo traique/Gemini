@@ -254,9 +254,14 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
 
         await telemetry.success(prompt_id, "prompt_generator", result_text)
-        suffix = "\n\n⚙️ API" if getattr(response, "used_fallback", False) else ""
-        await update.message.reply_text("📝 <b>Prompt gợi ý:</b>", parse_mode="HTML")
-        await common.reply_long_text(update.message, result_text + suffix)
+        # Prompt gửi trong khối <pre> để Telegram hiện nút Copy và giữ nguyên văn
+        # các ký tự * / _ (reply_long_text sẽ convert markdown và làm mất chúng).
+        # Nhãn "⚙️ API" đặt ở header, không nằm trong khối prompt.
+        header = "📝 <b>Prompt gợi ý</b> — chạm vào khối bên dưới để chép:"
+        if getattr(response, "used_fallback", False):
+            header += "  ⚙️ API"
+        await update.message.reply_text(header, parse_mode="HTML")
+        await common.reply_code_block(update.message, result_text)
     except Exception as e:
         logger.exception("Lỗi tạo prompt")
         await telemetry.failure(prompt_id, "prompt_generator", e)

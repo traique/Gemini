@@ -14,6 +14,7 @@ from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 import tg_format
+import tg_format_codeblock
 from core import config
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,14 @@ async def safe_delete(path) -> None:
 
 async def reply_long_text(message, text: str) -> None:
     await tg_format.reply_rich(message, text, max_len=TELEGRAM_TEXT_MAX)
+
+
+async def reply_code_block(message, text: str) -> None:
+    """Trả về text NGUYÊN VĂN trong khối <pre> để Telegram hiện nút Copy.
+    Dùng cho /prompt và ảnh -> prompt: nội dung đó sinh ra để chép nguyên khối
+    dán sang app Gemini, không phải để đọc, nên KHÔNG được convert markdown
+    (sẽ làm mất các dấu * và _ có trong prompt)."""
+    await tg_format_codeblock.reply_code_block(message, text, max_len=TELEGRAM_TEXT_MAX)
 
 
 async def reply_long_text_edit_first(status_message, text: str) -> None:
