@@ -18,6 +18,18 @@ lý do ảnh tạo ra khác hẳn ảnh mẫu:
    "attached reference image" mới có nghĩa. Ngược lại, KHÔNG được bịa chi
    tiết khuôn mặt vì sẽ chọi với ảnh thật đính kèm.
 
+Ngoài khuôn mặt, 4 thứ dưới đây bắt buộc phải có trong prompt, vì thiếu
+chúng thì ảnh tạo ra sai hoàn toàn dù mặt có đúng:
+- KHUNG HÌNH: dọc hay ngang, cỡ ảnh, độ cao và góc máy, khoảng cách. Không
+  nói thì Gemini mặc định đẻ ra ảnh ngang, người bé tí ở giữa khung.
+- DÁNG NGƯỜI: góc tay, khuỷu thẳng hay gập, độ cao bàn tay, hướng lòng bàn
+  tay, nghiêng đầu, hướng nhìn, tóc. "arms outstretched" chung chung bị hiểu
+  thành động tác nhún vai.
+- CHẤT ẢNH: bám theo ảnh gốc. Ảnh gốc bóng bẩy mà ép "visible pores,
+  unretouched, zero airbrushing" là đánh nhau với chính ảnh mẫu.
+- ỐNG KÍNH: suy từ phối cảnh của ảnh gốc, không chép cứng 35mm của ví dụ
+  (35mm là góc rộng, càng đẩy chủ thể ra xa và nhỏ lại).
+
 Hỗ trợ 2 cách gửi ảnh:
 - Ảnh nén (filters.PHOTO): đi qua photo_msg trực tiếp.
 - File/document ảnh (filters.Document.IMAGE): cũng đi qua photo_msg,
@@ -112,33 +124,38 @@ _PHOTO_SUBJECT_RULE_REFERENCE = (
     "Describe only pose, expression, outfit, setting and lighting."
 )
 
-IMAGE_ANALYZE_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" and HYPER-REALISTIC prompts. The goal is to generate images that look like real, candid, unretouched photographs, avoiding any "AI-generated", plasticky, or overly polished aesthetic.
+IMAGE_ANALYZE_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" prompts that reproduce a reference photograph as closely as possible: the same framing, the same pose and the same visual finish, not just the same person.
 
 Look at the attached reference image and write ONE complete, ready-to-use English prompt following EXACTLY this structure and style (this is a NEUTRAL example showing the expected format, level of detail and how to name the subject - match its structure, but invent NEW content taken from the reference photo):
 
 ---
-{identity_lock_block}Raw, candid smartphone photo of {subject_phrase} standing on a quiet residential sidewalk in the late afternoon. She is looking slightly off-camera with a natural, unposed expression, one hand resting on the strap of her shoulder bag.
+{identity_lock_block}Raw, candid smartphone photo of {subject_phrase} standing on a quiet residential sidewalk in the late afternoon. Vertical 9:16 portrait orientation, three-quarter body shot framed from mid-thigh up, camera held at the subject's chest height and perfectly level with her, roughly two metres away, so she fills most of the frame height with only a little headroom.
+
+Her arms hang relaxed and almost straight down at her sides, elbows barely bent, both hands at hip height with the palms turned inwards towards her thighs. Her weight rests on her left leg, her shoulders are square to the camera, her head is tilted very slightly to her right with the chin level, and she looks a little off-camera. Her lips are closed in a small natural smile, and a few loose strands of hair fall across her cheek.
 
 She is wearing a plain oversized grey cotton t-shirt and simple straight-leg jeans, with natural fabric folds and everyday creases.
 
-The background is an ordinary street with a low garden wall and parked cars, softly out of focus.
+The background is an ordinary street with a low garden wall and parked cars, moderately out of focus.
 
-Shot on iPhone 15 Pro Max camera, unedited, unretouched. 35mm lens, f/1.8.
+Shot on an iPhone 15 Pro Max, 48mm-equivalent lens at f/1.8, matching the plain everyday snapshot look of this scene.
 
-Soft, warm late-afternoon daylight. Natural skin texture, visible pores, slight skin imperfections. Subtle chromatic aberration, fine film grain. Authentic, raw, documentary photography style, zero airbrushing.
+Soft, warm late-afternoon daylight. Natural skin texture with visible pores and slight imperfections. Subtle chromatic aberration, fine film grain. Authentic, raw, documentary photography style.
 ---
 
-⚠️ The example above demonstrates FORMAT, PHOTOGRAPHY STYLE and HOW TO NAME THE SUBJECT only. The scene, setting, outfit, pose, lighting and mood MUST be derived entirely from the reference image, NOT copied from the example. Do NOT reuse the sidewalk, the grey t-shirt, the jeans or the late-afternoon light unless the reference image actually shows them.
+⚠️ The example above demonstrates FORMAT, LEVEL OF DETAIL and HOW TO NAME THE SUBJECT only. The framing, pose, scene, setting, outfit, lighting, lens and finish MUST all be read off the reference image, NOT copied from the example. Do NOT reuse the sidewalk, the grey t-shirt, the jeans, the 9:16 vertical framing, the 48mm lens or the late-afternoon light unless the reference image actually shows them.
 
 Rules for what you generate:
 {identity_rule}
 {subject_rule}
-3. ACCURATELY describe the outfit, accessories, pose, framing and vibe of the reference image. If it's a sensual/wet look, describe it accurately using anatomical and clothing terms without being explicitly pornographic.
-4. LIGHTING AND GRAIN MUST MATCH THE ACTUAL SCENE of the reference image. Only write "low-light noise" for a genuine night or dim indoor scene; for daylight, overcast or bright indoor scenes write the correct light and use "fine film grain" or "subtle sensor noise" instead. Contradictory lighting terms make the generator drift away from the reference.
-5. DO NOT append any tool-specific flags or parameters such as "--ar 4:5", "--v 6", "--style raw" or "::". These belong to other tools and are meaningless here; if the aspect ratio matters, describe the framing in plain words (e.g. "vertical portrait framing").
-6. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless", "editorial", or "studio lighting". These cause the image to look fake.
-7. MANDATORY WORDS: ALWAYS include photography terms that add realism and imperfection, such as "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting", or specific camera models (e.g., "Shot on Kodak Portra 400", "Polaroid", "iPhone snapshot").
-8. Output ONLY the final prompt as plain text, no markdown headers, no preamble."""
+3. ACCURATELY describe the outfit, accessories and vibe of the reference image. If it's a sensual/wet look, describe it accurately using anatomical and clothing terms without being explicitly pornographic.
+4. FRAMING IS MANDATORY - never omit it. In the first paragraph you MUST state, in plain words: (a) the orientation and aspect ratio you can see in the reference image, written out as "vertical 9:16 portrait orientation", "vertical 4:5 portrait orientation", "square 1:1 framing" or "horizontal 16:9 landscape orientation"; (b) the shot size (extreme close-up, head-and-shoulders portrait, waist-up, three-quarter body, full body, or wide environmental shot); (c) the camera height and angle (at eye level, at chest height, low angle looking up, high angle looking down, tilted); (d) roughly how far the camera is from the subject; and (e) how much of the frame the subject occupies and how much headroom there is. A generator given no framing information defaults to a wide horizontal image with a small, distant subject, which will not match the reference at all.
+5. POSE MUST BE GEOMETRICALLY PRECISE - vague phrases such as "arms outstretched", "posing naturally" or "hands out" get misread ("arms outstretched with open palms" is commonly rendered as a shrug with bent elbows and palms up at shoulder height). Devote a short paragraph to the body and state: the angle of each arm relative to the torso, whether each elbow is straight or bent, the height of each hand (hip, waist, chest, shoulder, above the head), which way each palm faces, what the hands are touching or holding, the stance and weight distribution, the shoulder and torso rotation, the head tilt and chin height, the direction of the gaze, whether the mouth is closed or open, and how the hair falls or is blown.
+6. LIGHTING AND GRAIN MUST MATCH THE ACTUAL SCENE of the reference image. Only write "low-light noise" for a genuine night or dim indoor scene; for daylight, overcast or bright indoor scenes write the correct light and use "fine film grain" or "subtle sensor noise" instead. Contradictory lighting terms make the generator drift away from the reference.
+7. CAMERA AND LENS MUST BE INFERRED FROM THE REFERENCE IMAGE, never copied from the example. Judge them from the perspective you actually see: a tight portrait with a compressed, strongly blurred background implies a longer lens (roughly 70-135mm equivalent at a wide aperture); a normal half-body snapshot implies around 40-55mm; only a deliberately wide, environment-heavy shot implies 24-35mm. State the focal length and aperture that match, and describe the depth of field you can see (background strongly blurred, softly blurred, or mostly sharp). A wide focal length pushes the subject away and shrinks them in the frame, so do not use one for a close portrait.
+8. THE FINISH MUST MATCH THE REFERENCE IMAGE, and this overrides any default preference for raw photography. First decide which the reference is. If it is a genuine unpolished snapshot, use terms like "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting". If instead it is visibly polished or heavily edited - smooth glowing skin, vivid saturated colour, strong background blur, a beauty-filtered or stylised look - then say so plainly: "softly retouched", "smooth luminous skin", "gentle beauty-filter finish", "rich saturated colour", "strong creamy background blur", and in that case you MUST NOT write "visible pores", "unretouched", "skin imperfections" or "zero airbrushing", because those terms fight the reference and change the whole look. Whichever branch you choose, always keep the shot reading as a real photograph.
+9. DO NOT append any tool-specific flags or parameters such as "--ar 4:5", "--v 6", "--style raw" or "::". These belong to other tools and are meaningless here; the aspect ratio belongs in the framing sentence required by rule 4, written in plain words.
+10. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless" or "editorial". These are empty booster words and make the image look fake.
+11. Output ONLY the final prompt as plain text, no markdown headers, no preamble."""
 
 
 @common.restricted
