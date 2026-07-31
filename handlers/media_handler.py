@@ -56,14 +56,27 @@ from services.telemetry import telemetry
 
 logger = logging.getLogger(__name__)
 
+# Độ dài tối đa của chi tiết lỗi in ra Telegram. Bot chỉ phục vụ 1 người nên
+# in thẳng loại lỗi + thông điệp là cách nhanh nhất để biết provider nào hỏng,
+# thay vì phải mở log Render.
+_ERROR_DETAIL_MAX = 300
+
+
+def _short_error(exc: BaseException) -> str:
+    detail = f"{type(exc).__name__}: {exc}"
+    if len(detail) > _ERROR_DETAIL_MAX:
+        detail = detail[:_ERROR_DETAIL_MAX] + "…"
+    return detail
+
+
 # ---------------------------------------------------------------------------
 # Rule 1 - có chen dòng [Identity Lock] hay không
 # ---------------------------------------------------------------------------
 # Dạng 1 (không từ khoá, gồm cả ảnh không caption): không có dòng lock.
 _PHOTO_IDENTITY_RULE_NONE = (
-    "1. DO NOT include an \"[Identity Lock: ...]\" line at all, under any "
-    "circumstances. Start the prompt directly with the scene description, "
-    "even if the reference image clearly contains a person or a face."
+    '1. DO NOT include an "[Identity Lock: ...]" line at all, under any '
+    'circumstances. Start the prompt directly with the scene description, '
+    'even if the reference image clearly contains a person or a face.'
 )
 
 # ---------------------------------------------------------------------------
@@ -91,17 +104,17 @@ _SUBJECT_PHRASE_REFERENCE = "the subject from the attached reference image"
 # Rule 2 - khuôn mặt lấy từ đâu và tả như thế nào
 # ---------------------------------------------------------------------------
 _PHOTO_SUBJECT_RULE_DESCRIBED = (
-    "2. CRITICAL - this prompt will be pasted as PLAIN TEXT with NO image "
-    "attached. Therefore you must NEVER write \"the subject from the reference "
-    "image\", \"the person in the photo\", or any phrase pointing at an image: "
-    "with nothing attached such a phrase is empty and the generator will "
-    "invent a random face. Instead REPLACE the subject with a dense written "
-    "description of the person you actually see in the reference image, so "
-    "that the prompt reproduces them on its own. You MUST state all of: "
-    "approximate age, ethnicity or facial character, face shape, eye shape and "
-    "eye colour, eyebrow shape, nose shape, lip shape, jawline and chin, skin "
-    "tone and skin texture, and hair colour, length, texture and parting. Put "
-    "this description in the very first sentence, exactly like the example."
+    '2. CRITICAL - this prompt will be pasted as PLAIN TEXT with NO image '
+    'attached. Therefore you must NEVER write "the subject from the reference '
+    'image", "the person in the photo", or any phrase pointing at an image: '
+    'with nothing attached such a phrase is empty and the generator will '
+    'invent a random face. Instead REPLACE the subject with a dense written '
+    'description of the person you actually see in the reference image, so '
+    'that the prompt reproduces them on its own. You MUST state all of: '
+    'approximate age, ethnicity or facial character, face shape, eye shape and '
+    'eye colour, eyebrow shape, nose shape, lip shape, jawline and chin, skin '
+    'tone and skin texture, and hair colour, length, texture and parting. Put '
+    'this description in the very first sentence, exactly like the example.'
 )
 _PHOTO_SUBJECT_RULE_GIRL = (
     "2. CRITICAL - the face is FIXED by the Identity Lock above and must be "
@@ -115,13 +128,13 @@ _PHOTO_SUBJECT_RULE_GIRL = (
     "from the reference image."
 )
 _PHOTO_SUBJECT_RULE_REFERENCE = (
-    "2. CRITICAL - the user will attach the reference photo together with this "
-    "prompt, so the identity is carried by that attachment. Refer to the "
-    "subject as \"the subject from the attached reference image\" and state "
-    "that her face must match the attached photo exactly. DO NOT invent "
-    "concrete facial features (eye colour, face shape, nose or lip shape, hair "
-    "colour): inventing them fights the attached photo and changes the face. "
-    "Describe only pose, expression, outfit, setting and lighting."
+    '2. CRITICAL - the user will attach the reference photo together with this '
+    'prompt, so the identity is carried by that attachment. Refer to the '
+    'subject as "the subject from the attached reference image" and state '
+    'that her face must match the attached photo exactly. DO NOT invent '
+    'concrete facial features (eye colour, face shape, nose or lip shape, hair '
+    'colour): inventing them fights the attached photo and changes the face. '
+    'Describe only pose, expression, outfit, setting and lighting.'
 )
 
 IMAGE_ANALYZE_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" prompts that reproduce a reference photograph as closely as possible: the same framing, the same pose and the same visual finish, not just the same person.
@@ -216,10 +229,15 @@ async def photo_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.exception("Lỗi không xác định khi tải ảnh")
         await telemetry.failure(prompt_id, "promptify", e)
-        await update.message.reply_text("❌ Không tải được ảnh. Anh thử gửi lại nhé.")
+        await update.message.reply_text(
+            f"❌ Không tải được ảnh. Anh thử gửi lại nhé.\n🔎 {_short_error(e)}"
+        )
         return
 
-    # ── Pha 2: Phân tích bằng Gemini và gửi kết quả ──────────────────
+    # ── Pha 2: Phân tích bằng Gemini ────────────────────────────────
+    # Tách RIÊNG khỏi pha gửi kết quả. Trước đây cả hai nằm chung một khối
+    # try/except nên khi lỗi không tài nào biết được là Gemini hỏng hay
+    # Telegram hỏng, và thông báo cũ nuốt sạch chi tiết lỗi.
     try:
         instruction = IMAGE_ANALYZE_INSTRUCTION_BASE.format(
             identity_lock_block=identity_lock_block,
@@ -231,30 +249,46 @@ async def photo_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             instruction += f"\n\nAdditional user instruction: {caption}"
 
         response = await orchestrator.analyze_image(instruction, str(local_path))
-        result_text = (response.text or "").strip()
+        result_text = (getattr(response, "text", None) or "").strip()
+        used_fallback = bool(getattr(response, "used_fallback", False))
+    except Exception as e:
+        # Nguyên nhân hay gặp: cookie Gemini chết + API hết quota (cả
+        # provider-chain sập), key API chưa cấu hình, hoặc ảnh bị chặn vì
+        # chính sách nội dung. In thẳng loại lỗi để khỏi phải mò log Render.
+        logger.exception("Lỗi phân tích ảnh (provider-chain)")
+        await telemetry.failure(prompt_id, "promptify", e)
+        await update.message.reply_text(
+            "❌ Gemini không phân tích được ảnh lúc này.\n"
+            f"🔎 {_short_error(e)}\n"
+            "Anh gõ /status xem provider nào đang sống nhé."
+        )
+        return
+    finally:
+        await common.safe_delete(local_path)
 
-        if not result_text:
-            await telemetry.success(prompt_id, "promptify", "(Gemini không trả về nội dung)")
-            await update.message.reply_text(
-                "Gemini không trả về nội dung phân tích. Thử gửi lại ảnh hoặc ảnh khác nhé."
-            )
-            return
+    if not result_text:
+        await telemetry.success(prompt_id, "promptify", "(Gemini không trả về nội dung)")
+        await update.message.reply_text(
+            "Gemini không trả về nội dung phân tích. Thử gửi lại ảnh hoặc ảnh khác nhé."
+        )
+        return
 
-        await telemetry.success(prompt_id, "promptify", result_text)
-        # Header riêng, rồi nội dung prompt gửi trong khối <pre> để Telegram hiện
-        # nút Copy. Nhãn "⚙️ API" đặt ở header chứ KHÔNG đặt trong khối prompt,
-        # nếu không bấm Copy sẽ chép luôn cả nhãn đó sang app Gemini.
-        header = "📝 <b>Prompt gợi ý (dùng cho app Gemini)</b> — chạm vào khối bên dưới để chép:"
-        if getattr(response, "used_fallback", False):
-            header += "  ⚙️ API"
-        header += mode_hint
+    await telemetry.success(prompt_id, "promptify", result_text)
+
+    # ── Pha 3: Gửi kết quả về Telegram ──────────────────────────────
+    # Header riêng, rồi nội dung prompt gửi trong khối <pre> để Telegram hiện
+    # nút Copy. Nhãn "⚙️ API" đặt ở header chứ KHÔNG đặt trong khối prompt,
+    # nếu không bấm Copy sẽ chép luôn cả nhãn đó sang app Gemini.
+    header = "📝 <b>Prompt gợi ý (dùng cho app Gemini)</b> — chạm vào khối bên dưới để chép:"
+    if used_fallback:
+        header += "  ⚙️ API"
+    header += mode_hint
+    try:
         await update.message.reply_text(header, parse_mode="HTML")
         await common.reply_code_block(update.message, result_text)
     except Exception as e:
-        logger.exception("Lỗi phân tích ảnh (Gemini hoặc gửi kết quả)")
-        await telemetry.failure(prompt_id, "promptify", e)
+        logger.exception("Lỗi gửi kết quả prompt về Telegram")
         await update.message.reply_text(
-            "❌ Gemini không phân tích được ảnh lúc này. Anh thử lại sau nhé."
+            "❌ Đã tạo được prompt nhưng gửi về Telegram lỗi.\n"
+            f"🔎 {_short_error(e)}"
         )
-    finally:
-        await common.safe_delete(local_path)
