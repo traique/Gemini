@@ -174,7 +174,7 @@ YÊU CẦU QUAN TRỌNG:
 1. So khớp CHÍNH XÁC phiên bản/dung lượng.
 2. BẮT BUỘC phải trích xuất URL (đường link) gốc của trang sản phẩm để người dùng bấm vào xem.
 3. Không tự bịa giá. Nếu hệ thống báo hết hàng hoặc không có giá, hãy ghi chú rõ.
-4. BẮT BUỘC dùng công cụ Google Search TRƯỚC, rồi mới trả lời - không được trả lời dựa trên trí nhớ/kiến thức đã học sẵn của bạn. Kiến thức nội bộ của bạn có thể đã LỖI THỜI (sản phẩm mới ra mắt sau thời điểm bạn được huấn luyện). Nếu kết quả tìm kiếm cho thấy sản phẩm đã có bán/có giá, PHẢI tin theo kết quả tìm kiếm dù điều đó trái với những gì bạn "nhớ". Chỉ được kết luận "chưa ra mắt" hoặc "chưa có giá" khi kết quả tìm kiếm thực sự không tìm thấy thông tin nào về sản phẩm này.
+4. BẮT BUỘC dùng công cụ Google Search TRƯỚC, rồi mới trả lời - không được trả lời dựa trên trí nhớ/kiến thức đã học sẵn của bạn. Kiến thức nội bộ của bạn có thể đã LỖI THỌI (sản phẩm mới ra mắt sau thời điểm bạn được huấn luyện). Nếu kết quả tìm kiếm cho thấy sản phẩm đã có bán/có giá, PHẢI tin theo kết quả tìm kiếm dù điều đó trái với những gì bạn "nhớ". Chỉ được kết luận "chưa ra mắt" hoặc "chưa có giá" khi kết quả tìm kiếm thực sự không tìm thấy thông tin nào về sản phẩm này.
 
 Trình bày kết quả theo ĐÚNG định dạng list (KHÔNG dùng bảng markdown vì Telegram không hiển thị được bảng) và văn phong sau:
 
@@ -254,9 +254,14 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
 
         await telemetry.success(prompt_id, "prompt_generator", result_text)
-        suffix = "\n\n⚙️ API" if getattr(response, "used_fallback", False) else ""
-        await update.message.reply_text("📝 <b>Prompt gợi ý:</b>", parse_mode="HTML")
-        await common.reply_long_text(update.message, result_text + suffix)
+        # Prompt gửi trong khối <pre> để Telegram hiện nút Copy và giữ nguyên văn
+        # các ký tự * / _ (reply_long_text sẽ convert markdown và làm mất chúng).
+        # Nhãn "⚙️ API" đặt ở header, không nằm trong khối prompt.
+        header = "📝 <b>Prompt gợi ý</b> — chạm vào khối bên dưới để chép:"
+        if getattr(response, "used_fallback", False):
+            header += "  ⚙️ API"
+        await update.message.reply_text(header, parse_mode="HTML")
+        await common.reply_code_block(update.message, result_text)
     except Exception as e:
         logger.exception("Lỗi tạo prompt")
         await telemetry.failure(prompt_id, "prompt_generator", e)
