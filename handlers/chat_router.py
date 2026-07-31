@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import messages
+import stock_analysis
 from ai import orchestrator
 from core import database as db
 from handlers import common, stock_handler
@@ -42,9 +43,16 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if tool_result:
             combined_grounding = f"{grounding}\n\n{tool_result}" if grounding else tool_result
 
+        # Câu hỏi về dữ liệu thị trường ngoài sàn VN (giá dầu, vàng, tỷ giá,
+        # crypto, chỉ số quốc tế): bot KHÔNG có provider nào cho nhóm này nên
+        # không thể dựng grounding từ code. Ép nhánh có Google Search thật kèm
+        # chỉ thị cấm bịa, thay vì để LLM tự dựng số liệu và cả sự kiện thời sự.
+        require_real_search = stock_analysis.wants_external_market_data(text)
+
         memory_context = await memory_service.build_memory_context(user_id, query_text=text)
         response = await orchestrator.chat(
-            user_id, text, grounding=combined_grounding, memory_context=memory_context
+            user_id, text, grounding=combined_grounding, memory_context=memory_context,
+            require_real_search=require_real_search,
         )
         reply_text = (response.text or "").strip()
 

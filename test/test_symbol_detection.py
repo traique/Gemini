@@ -3,6 +3,9 @@
 Regression cho bug: mã nằm ngoài ALL_KNOWN_SYMBOLS mà gõ viết thường (vd
 "gvr") không được nhận, khiến câu hỏi rơi xuống Gemini không kèm dữ liệu giá
 thật và bị trả lời bằng số bịa.
+
+Xem thêm test/test_market_data_guard.py cho vòng sửa thứ hai (tin nhắn trơ
+trọi dạng mã, nhãn realtime ngoài giờ, dữ liệu thị trường ngoài sàn VN).
 """
 import stock_analysis
 
@@ -22,10 +25,17 @@ def test_uppercase_symbol_still_works_without_any_context():
     assert "GVR" in unverified
 
 
-def test_bare_lowercase_without_context_is_ignored():
+def test_bare_lowercase_is_now_a_candidate():
+    """Trước đây test này khẳng định điều ngược lại: "gvr" trơ trọi bị bỏ qua.
+
+    Đó là quyết định sai. Thực tế người dùng tra mã bằng cách gõ ĐÚNG mã và
+    không gì khác, và hậu quả của việc bỏ qua không phải là "bot không trả
+    lời" mà là "bot trả lời bằng giá bịa": 30/07/2026 bot báo GVR 34.500 VND
+    trong khi giá thật là 27.550 VND. Xem stock_analysis.is_bare_symbol_message.
+    """
     known, unverified = stock_analysis.detect_symbol_candidates("gvr")
     assert known == []
-    assert unverified == []
+    assert "GVR" in unverified
 
 
 def test_known_symbol_lowercase_unaffected():

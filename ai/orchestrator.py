@@ -54,6 +54,49 @@ def get_provider_state_snapshot() -> dict:
     return provider_state.snapshot()
 
 
+def _search_only_providers() -> Optional[list[str]]:
+    """Danh sách provider cho các tác vụ BẮT BUỘC có Google Search thật.
+
+    Nhánh cookie (ai/cookie_client.py) KHÔNG gắn types.Tool(google_search) vào
+    request - nó phó mặc cho app Gemini web tự quyết định có browse hay không.
+    Nên với các tác vụ mà trả lời sai số liệu là không chấp nhận được, phải
+    loại cookie ra khỏi order.
+
+    Trả None nếu chưa cấu hình key API nào - lúc đó giữ nguyên order mặc
+    định (còn hơn là không trả lời được gì), và phần chỉ thị cấm bịa trong
+    prompt vẫn được áp dụng cho cả nhánh cookie.
+    """
+    if not (official_client.api_key_for(1) or official_client.api_key_for(2)):
+        return None
+    order = [p for p in config.PROVIDER_ORDER if p != "cookie"]
+    return order or ["api1", "api2"]
+
+
+# Chỉ thị gắn vào prompt khi câu hỏi cần dữ liệu thực tế bên ngoài mà code
+# không tự dựng grounding được (giá dầu, vàng, tỷ giá, crypto, chỉ số quốc
+# tế, tin thời sự).
+#
+# BẬT enable_search=True KHÔNG ĐỦ: nhánh API của chat() vốn đã luôn bật
+# search tool, nhưng model tự quyết định có gọi tool hay không. Với tin nhắn
+# ngắn kiểu "Oil", nó không thấy lý do phải tra cứu nên trả lời từ trí nhớ
+# của mình - và dựng ra cả giá Brent/WTI lẫn một kịch bản địa chính trị
+# không có thật. Phải nói thành lời rằng việc tra cứu là bắt buộc, và nêu
+# rõ hành vi mong muốn khi tra không ra: nói không biết, không đoán.
+_FORCED_SEARCH_DIRECTIVE = (
+    "[YÊU CẦU BẮT BUỘC TỪ HỆ THỐNG]\n"
+    "Câu hỏi này cần số liệu/sự kiện thực tế bên ngoài sàn chứng khoán Việt Nam "
+    "(giá hàng hoá, tỷ giá, crypto, chỉ số quốc tế, tin thời sự). Hệ thống KHÔNG "
+    "có sẵn dữ liệu này để cung cấp cho bạn.\n"
+    "1. BẮT BUỘC dùng Google Search để tra trước khi trả lời.\n"
+    "2. CHỈ được nêu con số, mốc thời gian và sự kiện có TRONG kết quả tra cứu. "
+    "Kèm theo thời điểm của số liệu và tên nguồn.\n"
+    "3. Nếu tra không ra dữ liệu: nói thẳng là chưa tra được và DỪNG LẠI. "
+    "TUYỆT ĐỐI KHÔNG đưa ra bất kỳ con số hay sự kiện nào từ trí nhớ, không ước "
+    "lượng, không suy diễn. Trả lời \"em chưa tra được\" là ĐÚNG; đoán một con "
+    "số nghe hợp lý là SAI nghiêm trọng."
+)
+
+
 # ─── Provider-chain dispatcher (tổng quát hoá theo config.PROVIDER_ORDER) ──
 async def _run_provider_chain(*, cookie_call, api_call, providers_override: Optional[list[str]] = None):
     """cookie_call: async callable () -> ModelOutput (gemini-webapi).
@@ -209,7 +252,7 @@ async def ask(prompt: str, model: Optional[str] = None, enable_search: bool = Fa
     return await _run_provider_chain(cookie_call=_cookie_call, api_call=_api_call, providers_override=providers_override)
 
 
-async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: str = ""):
+async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: str = "", require_real_search: bool = False):
     """Chat tự nhiên (persona Lan Anh) qua provider-chain.
     - Cookie: ChatSession (gemini-webapi) - Google giữ lịch sử phía họ. Vì
       lịch sử được Google lưu vĩnh viễn cho session, memory_context (trí nhớ
@@ -223,12 +266,23 @@ async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: s
     grounding: dữ liệu giá thực tế (vd từ DNSE) để Gemini bám số thật thay
     vì tự bịa. memory_context: trí nhớ dài hạn (user_facts + rolling
     summary, xem services.memory_service.build_memory_context()). Cả hai chỉ
-    chèn vào request gửi đi, không lưu vào chat_messages."""
+    chèn vào request gửi đi, không lưu vào chat_messages.
+
+    require_real_search: câu hỏi cần dữ liệu thực tế bên ngoài mà code không
+    dựng được grounding (giá dầu, vàng, tỷ giá, crypto, chỉ số quốc tế, tin
+    thời sự - xem stock_analysis.wants_external_market_data()). Khi bật: gắn
+    _FORCED_SEARCH_DIRECTIVE vào prompt và loại nhánh cookie khỏi order nếu có
+    key API. LƯU Ý: nhánh API vốn đã luôn enable_search=True, nhưng model tự
+    quyết định có gọi tool hay không - nên bật tool KHÔNG ĐỦ, phải nói rõ
+    trong prompt rằng tra cứu là bắt buộc.
+    """
     full_prompt = prompt
     if grounding:
         full_prompt = f"{grounding}\n\n{full_prompt}"
     if memory_context:
         full_prompt = f"{memory_context}\n\n{full_prompt}"
+    if require_real_search:
+        full_prompt = f"{_FORCED_SEARCH_DIRECTIVE}\n\n{full_prompt}"
 
     async def _cookie_call():
         is_new_session = await cookie_client.ensure_chat_session()
@@ -242,6 +296,11 @@ async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: s
             prompt_with_time = f"{grounding}\n\n{prompt_with_time}"
         if is_new_session and memory_context:
             prompt_with_time = f"{memory_context}\n\n{prompt_with_time}"
+        # Nhánh cookie thường đã bị loại khỏi order khi require_real_search, trừ
+        # khi chưa cấu hình key API nào. Vẫn gắn chỉ thị ở đây để trường hợp
+        # đó ít nhất cũng biết là không được bịa khi không tra được.
+        if require_real_search:
+            prompt_with_time = f"{_FORCED_SEARCH_DIRECTIVE}\n\n{prompt_with_time}"
         return await cookie_client.get_chat_session().send_message(prompt_with_time)
 
     async def _api_call(idx: int):
@@ -259,7 +318,10 @@ async def chat(user_id: int, prompt: str, grounding: str = "", memory_context: s
             model=preferred_model,
         )
 
-    return await _run_provider_chain(cookie_call=_cookie_call, api_call=_api_call)
+    providers_override = _search_only_providers() if require_real_search else None
+    return await _run_provider_chain(
+        cookie_call=_cookie_call, api_call=_api_call, providers_override=providers_override
+    )
 
 
 async def reset_chat() -> None:
@@ -341,7 +403,7 @@ async def try_cookie_now() -> tuple[bool, str]:
         return ok, detail
 
 
-# ─── Probe nền tự quay về cookie ────────────────────────────────
+# ─── Probe nền tự quay về cookie ──────────────────────────────
 _probe_task: Optional[asyncio.Task] = None
 
 
