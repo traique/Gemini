@@ -36,7 +36,61 @@ CRUCIAL FOR REALISM: Unretouched natural skin texture, visible facial pores, sub
 Maintain identical facial structure, facial proportions, eye shape, eyebrow shape, nose, lips, jawline, chin, skin tone, and overall identity across every image.]"""
 
 _IDENTITY_RULE_LOCK = "1. ALWAYS start with the exact identity lock text provided in the prompt structure above."
-_IDENTITY_RULE_NONE = "1. DO NOT include an [Identity Lock] line unless the user’s description specifically involves a person’s face. For scenes, objects, or abstract subjects, omit the Identity Lock entirely and start directly with the scene description."
+_IDENTITY_RULE_NONE = (
+    "1. DO NOT include an \"[Identity Lock: ...]\" line at all, under any "
+    "circumstances. Start the prompt directly with the scene description."
+)
+
+# ---------------------------------------------------------------------------
+# /prompt — 3 trường hợp, mỗi trường hợp lấy khuôn mặt từ một nguồn khác
+# nhau nên phải tả chủ thể theo một cách khác nhau (giống media_handler.py):
+#   1. không từ khoá -> tự dựng khuôn mặt và tả thành chữ trong prompt
+#   2. "cô gái 20"    -> tả lại khuôn mặt trong IDENTITY_LOCK_GIRL thành chữ
+#   3. "mặt tôi"      -> khoá theo ảnh user đính kèm trên app Gemini
+# ---------------------------------------------------------------------------
+_TEXT_SUBJECT_PHRASE_DESCRIBED = (
+    "a woman in her early 20s with long dark brown hair parted in the middle, "
+    "an oval face with a soft jawline, almond-shaped dark brown eyes, softly "
+    "arched thin eyebrows, a small straight nose, full natural lips and fair "
+    "warm-toned skin,"
+)
+_TEXT_SUBJECT_PHRASE_GIRL = (
+    "the same 20-year-old Vietnamese woman defined in the Identity Lock above "
+    "- heart-shaped face with a smooth jawline, large round doe eyes with "
+    "natural eyelashes, a delicate nose and natural soft lips,"
+)
+_TEXT_SUBJECT_PHRASE_REFERENCE = "the subject from the attached reference image"
+
+_TEXT_SUBJECT_RULE_DESCRIBED = (
+    "2. CRITICAL - there is NO image anywhere in this workflow, so you must "
+    "NEVER write \"the reference image\", \"the attached photo\" or any phrase "
+    "pointing at an image. If the user's description involves a person, you "
+    "MUST fully specify that person in words inside the first sentence - "
+    "approximate age, ethnicity or facial character, face shape, eye shape and "
+    "eye colour, eyebrow shape, nose shape, lip shape, jawline and chin, skin "
+    "tone and skin texture, and hair colour, length, texture and parting - "
+    "inventing plausible details that fit the description, exactly like the "
+    "example. If the description contains no person (a scene, object or "
+    "landscape), skip the face description entirely."
+)
+_TEXT_SUBJECT_RULE_GIRL = (
+    "2. CRITICAL - the face is FIXED by the Identity Lock above and must be "
+    "identical in every generation. You MUST also restate that locked face as "
+    "a written description inside the first sentence of the prompt (face "
+    "shape, jawline, eye shape, eyelashes, nose, lips, age, ethnicity), copied "
+    "faithfully from the Identity Lock block, exactly like the example. Take "
+    "only the pose, outfit, setting and mood from the user's description, and "
+    "never let the description override the locked face."
+)
+_TEXT_SUBJECT_RULE_REFERENCE = (
+    "2. CRITICAL - the user will attach their own photo together with this "
+    "prompt, so the identity is carried by that attachment. Refer to the "
+    "subject as \"the subject from the attached reference image\" and state "
+    "that the face must match the attached photo exactly. DO NOT invent "
+    "concrete facial features (eye colour, face shape, nose or lip shape, hair "
+    "colour): inventing them fights the attached photo and changes the face. "
+    "Describe only pose, expression, outfit, setting and lighting."
+)
 
 # ---------------------------------------------------------------------------
 # Cache ngắn hạn cho /gia
@@ -141,30 +195,31 @@ HELP_TEXT = (
 
 TEXT_PROMPT_INSTRUCTION_BASE = """You are an expert prompt engineer for AI image generation tools, specialized in writing "identity-preserving" and HYPER-REALISTIC prompts. The goal is to generate images that look like real, candid, unretouched photographs, avoiding any "AI-generated", plasticky, or overly polished aesthetic.
 
-Based on the user's basic description, write ONE complete, ready-to-use English prompt following EXACTLY this structure and style:
+Based on the user's basic description, write ONE complete, ready-to-use English prompt following EXACTLY this structure and style (this is a NEUTRAL example showing the expected format, level of detail and how to name the subject - match its structure, but invent NEW content taken from the user's description):
 
 ---
-{identity_lock}
+{identity_lock_block}Raw, candid smartphone photo of {subject_phrase} standing on a quiet residential sidewalk in the late afternoon. She is looking slightly off-camera with a natural, unposed expression, one hand resting on the strap of her shoulder bag.
 
-Raw, candid smartphone photo of the woman standing on a wet pedestrian street at night. She is looking slightly off-camera with a natural, unposed expression. Her hair is drenched from the rain, clinging to her neck and shoulders. 
+She is wearing a plain oversized grey cotton t-shirt and simple straight-leg jeans, with natural fabric folds and everyday creases.
 
-She is wearing a thin, wet white button-up shirt that clings to her skin, showing realistic wet fabric textures and natural folds. 
+The background is an ordinary street with a low garden wall and parked cars, softly out of focus.
 
-The background is a gritty, authentic urban street at night with heavy rain. Blurred streetlights and car headlights create natural out-of-focus bokeh on the wet asphalt. 
+Shot on iPhone 15 Pro Max camera, unedited, unretouched. 35mm lens, f/1.8.
 
-Shot on iPhone 15 Pro Max camera, unedited, unretouched. 35mm lens, f/1.8. 
-
-Harsh, imperfect street lighting mixed with camera flash. Natural skin texture, visible pores, slight skin imperfections, specular highlights on wet skin. Subtle chromatic aberration, noticeable low-light noise and film grain. Authentic, raw, documentary photography style, zero airbrushing. --ar 4:5
+Soft, warm late-afternoon daylight. Natural skin texture, visible pores, slight skin imperfections. Subtle chromatic aberration, fine film grain. Authentic, raw, documentary photography style, zero airbrushing.
 ---
 
-⚠️ The example above demonstrates FORMAT and PHOTOGRAPHY STYLE ONLY. The scene, setting, lighting, and mood MUST be derived entirely from the user's description below, NOT copied from the example.
+⚠️ The example above demonstrates FORMAT, PHOTOGRAPHY STYLE and HOW TO NAME THE SUBJECT only. The scene, setting, outfit, pose, lighting and mood MUST be derived entirely from the user's description below, NOT copied from the example. Do NOT reuse the sidewalk, the grey t-shirt, the jeans or the late-afternoon light unless the user's description actually calls for them.
 
 Rules for what you generate:
 {identity_rule}
-2. ACCURATELY describe the outfit, pose, and vibe based on the user's description.
-3. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless", "editorial", or "studio lighting".
-4. MANDATORY WORDS: ALWAYS include photography terms that add realism and imperfection, such as "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting", or specific camera models (e.g., "Shot on Kodak Portra 400", "Polaroid", "iPhone snapshot").
-5. Output ONLY the final prompt as plain text, no markdown headers, no preamble.
+{subject_rule}
+3. ACCURATELY describe the outfit, accessories, pose, framing and vibe based on the user's description.
+4. LIGHTING AND GRAIN MUST MATCH THE SCENE the user describes. Only write "low-light noise" for a genuine night or dim indoor scene; for daylight, overcast or bright indoor scenes write the correct light and use "fine film grain" or "subtle sensor noise" instead. Contradictory lighting terms make the result look wrong.
+5. DO NOT append any tool-specific flags or parameters such as "--ar 4:5", "--v 6", "--style raw" or "::". These belong to other tools and are meaningless here; if the aspect ratio matters, describe the framing in plain words (e.g. "vertical portrait framing").
+6. FORBIDDEN WORDS: NEVER use terms like "masterpiece", "8k", "ultra-photorealistic", "perfect", "flawless", "editorial", or "studio lighting".
+7. MANDATORY WORDS: ALWAYS include photography terms that add realism and imperfection, such as "candid", "unretouched", "raw photo", "natural skin texture", "visible pores", "film grain", "amateur lighting", or specific camera models (e.g., "Shot on Kodak Portra 400", "Polaroid", "iPhone snapshot").
+8. Output ONLY the final prompt as plain text, no markdown headers, no preamble.
 
 User's basic description: {user_desc}"""
 
@@ -223,24 +278,36 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     prompt_id = await telemetry.start(user_id, "prompt_generator", user_desc)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    # Xác định identity lock theo từ khoá:
-    # - giữ mặt / giữ khuôn mặt / mặt tôi / mặt anh / mặt em -> REFERENCE
-    # - cô gái 20 / gái 20                                          -> GIRL
-    # - không có từ khoá                                            -> không inject lock
+    # Xác định nguồn khuôn mặt theo từ khoá (3 trường hợp, xem phần hằng số
+    # _TEXT_SUBJECT_* ở đầu file):
+    # - giữ mặt / mặt tôi ... -> mặt nằm ở ảnh user đính kèm trên app Gemini
+    # - cô gái 20 / gái 20   -> mặt nằm ở khối lock cố định, phải tả ra chữ
+    # - không từ khoá        -> tự dựng khuôn mặt và tả ra chữ
     desc_lower = user_desc.lower()
     if any(kw in desc_lower for kw in KEEP_FACE_KEYWORDS):
-        identity_lock = IDENTITY_LOCK_REFERENCE
+        identity_lock_block = f"{IDENTITY_LOCK_REFERENCE}\n\n"
         identity_rule = _IDENTITY_RULE_LOCK
+        subject_phrase = _TEXT_SUBJECT_PHRASE_REFERENCE
+        subject_rule = _TEXT_SUBJECT_RULE_REFERENCE
+        mode_hint = "\n\n📎 Nhớ đính kèm ảnh của anh cùng prompt này trên app Gemini nha."
     elif any(kw in desc_lower for kw in GIRL_KEYWORDS):
-        identity_lock = IDENTITY_LOCK_GIRL
+        identity_lock_block = f"{IDENTITY_LOCK_GIRL}\n\n"
         identity_rule = _IDENTITY_RULE_LOCK
+        subject_phrase = _TEXT_SUBJECT_PHRASE_GIRL
+        subject_rule = _TEXT_SUBJECT_RULE_GIRL
+        mode_hint = "\n\n🔒 Khoá khuôn mặt cố định - dán prompt KHÔNG kèm ảnh để giữ đúng nhân vật."
     else:
-        identity_lock = "[Identity Lock: None]"
+        identity_lock_block = ""
         identity_rule = _IDENTITY_RULE_NONE
+        subject_phrase = _TEXT_SUBJECT_PHRASE_DESCRIBED
+        subject_rule = _TEXT_SUBJECT_RULE_DESCRIBED
+        mode_hint = "\n\n🖼️ Prompt tự tả khuôn mặt bằng chữ - dán là dùng được, không cần đính kèm ảnh."
 
     instruction = TEXT_PROMPT_INSTRUCTION_BASE.format(
-        identity_lock=identity_lock,
+        identity_lock_block=identity_lock_block,
+        subject_phrase=subject_phrase,
         identity_rule=identity_rule,
+        subject_rule=subject_rule,
         user_desc=user_desc,
     )
 
@@ -260,6 +327,7 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         header = "📝 <b>Prompt gợi ý</b> — chạm vào khối bên dưới để chép:"
         if getattr(response, "used_fallback", False):
             header += "  ⚙️ API"
+        header += mode_hint
         await update.message.reply_text(header, parse_mode="HTML")
         await common.reply_code_block(update.message, result_text)
     except Exception as e:
