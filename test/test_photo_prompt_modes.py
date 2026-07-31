@@ -5,6 +5,10 @@ mẫu phải tả chủ thể theo một cách khác nhau:
   1. không caption -> tả người trong ảnh thành chữ
   2. cô gái 20     -> tả khuôn mặt trong khối lock thành chữ
   3. mặt tôi      -> không tả mặt, khoá theo ảnh user đính kèm
+
+Ngoài khuôn mặt, cả 3 dạng đều phải bắt buộc tả khung hình, dáng người,
+chất ảnh và ống kính theo ảnh gốc - thiếu chúng thì ảnh tạo ra sai dù mặt
+đúng.
 """
 import sys
 from pathlib import Path
@@ -60,7 +64,7 @@ def _render_reference():
 _ALL_MODES = (_render_described, _render_girl, _render_reference)
 
 
-# ─── Template chung ───────────────────────────────────────
+# ─── Template chung ─────────────────────────────────
 
 def test_ca_3_dang_deu_format_duoc_khong_thieu_placeholder():
     for render in _ALL_MODES:
@@ -68,10 +72,10 @@ def test_ca_3_dang_deu_format_duoc_khong_thieu_placeholder():
         assert "{" not in text and "}" not in text
 
 
-def test_du_8_rule():
+def test_du_11_rule():
     for render in _ALL_MODES:
         text = render()
-        for n in range(1, 9):
+        for n in range(1, 12):
             assert f"\n{n}. " in text, f"thiếu rule {n}"
 
 
@@ -92,7 +96,80 @@ def test_vi_du_da_trung_tinh_khong_con_canh_mua_dem():
         assert leak not in example, f"ví dụ còn rỉ chi tiết: {leak}"
 
 
-# ─── Dạng 1: không caption ──────────────────────────────────
+# ─── Khung hình: lỗi nặng nhất khiến Gemini đẻ ảnh ngang, người bé tí ───
+
+def test_bat_buoc_ta_khung_hinh():
+    for render in _ALL_MODES:
+        text = render()
+        assert "FRAMING IS MANDATORY" in text
+        for need in (
+            "vertical 9:16 portrait orientation",
+            "horizontal 16:9 landscape orientation",
+            "shot size",
+            "camera height",
+            "headroom",
+        ):
+            assert need in text, f"rule khung hình thiếu {need}"
+
+
+def test_vi_du_co_san_cau_ta_khung_hinh():
+    """Model bắt chước ví dụ, nên ví dụ phải có sẵn câu khung hình."""
+    example = _render_described().split("---")[1]
+    assert "Vertical 9:16 portrait orientation" in example
+    assert "three-quarter body shot" in example
+    assert "chest height" in example
+
+
+# ─── Dáng người: "arms outstretched" bị hiểu thành động tác nhún vai ─────
+
+def test_bat_buoc_ta_dang_nguoi_chi_tiet():
+    for render in _ALL_MODES:
+        text = render()
+        assert "POSE MUST BE GEOMETRICALLY PRECISE" in text
+        for need in ("elbow", "palm", "head tilt", "gaze", "hair"):
+            assert need in text, f"rule dáng người thiếu {need}"
+
+
+def test_vi_du_co_doan_ta_dang_nguoi():
+    example = _render_described().split("---")[1]
+    assert "elbows barely bent" in example
+    assert "hip height" in example
+    assert "palms turned inwards" in example
+
+
+# ─── Chất ảnh: không được ép da thô khi ảnh gốc bóng bẩy ────────────
+
+def test_chat_anh_bam_theo_anh_goc():
+    for render in _ALL_MODES:
+        text = render()
+        assert "THE FINISH MUST MATCH THE REFERENCE IMAGE" in text
+        assert "softly retouched" in text
+        assert "gentle beauty-filter finish" in text
+
+
+def test_khong_con_ep_cung_visible_pores():
+    """Rule cũ luôn ép "visible pores / zero airbrushing" dù ảnh gốc bóng bẩy."""
+    for render in _ALL_MODES:
+        text = render()
+        assert "MANDATORY WORDS" not in text
+
+
+# ─── Ống kính: 35mm là góc rộng, đẩy chủ thể ra xa và nhỏ lại ─────────
+
+def test_ong_kinh_suy_tu_anh_goc():
+    for render in _ALL_MODES:
+        text = render()
+        assert "CAMERA AND LENS MUST BE INFERRED FROM THE REFERENCE IMAGE" in text
+        assert "70-135mm" in text
+        assert "never copied from the example" in text
+
+
+def test_canh_bao_khong_chep_ong_kinh_cua_vi_du():
+    text = _render_described()
+    assert "the 48mm lens" in text
+
+
+# ─── Dạng 1: không caption ───────────────────────────────
 
 def test_dang_1_khong_co_dong_identity_lock():
     text = _render_described()
@@ -123,7 +200,7 @@ def test_dang_1_vi_du_chu_the_co_san_mo_ta_mat():
         assert feature in phrase
 
 
-# ─── Dạng 2: cô gái 20 ────────────────────────────────────
+# ─── Dạng 2: cô gái 20 ────────────────────────────────
 
 def test_dang_2_giu_nguyen_khoi_lock_co_dinh():
     assert IDENTITY_LOCK_GIRL in _render_girl()
@@ -149,7 +226,7 @@ def test_dang_2_cam_ta_mat_nguoi_trong_anh():
     assert "pose" in rule and "outfit" in rule
 
 
-# ─── Dạng 3: mặt tôi ─────────────────────────────────────
+# ─── Dạng 3: mặt tôi ─────────────────────────────────
 
 def test_dang_3_giu_lock_reference():
     assert IDENTITY_LOCK_REFERENCE in _render_reference()
@@ -167,14 +244,14 @@ def test_dang_3_cam_bia_dac_diem_khuon_mat():
     assert "eye colour" in rule and "face shape" in rule
 
 
-# ─── 3 dạng phải khác nhau thật sự ────────────────────────────
+# ─── 3 dạng phải khác nhau thật sự ──────────────────────────
 
 def test_ba_dang_cho_ra_ba_prompt_khac_nhau():
     rendered = {render() for render in _ALL_MODES}
     assert len(rendered) == 3
 
 
-# ─── Từ khoá định tuyến ──────────────────────────────────
+# ─── Từ khoá định tuyến ───────────────────────────────
 
 def _route(caption: str) -> str:
     """Lặp lại đúng thứ tự điều kiện trong photo_msg."""
