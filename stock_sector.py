@@ -5,18 +5,43 @@ from dataclasses import dataclass
 
 import stock_providers as providers
 
+# SECTOR_MAP có HAI vai trò, đừng chỉ nghĩ nó là bản đồ ngành:
+#   1. Dữ liệu cho phân tích luân chuyển ngành (build_sector_context).
+#   2. Nguồn sinh ALL_KNOWN_SYMBOLS - danh sách mã mà stock_analysis coi là
+#      "đã biết chắc", không cần gọi DNSE verify. Mã nằm ngoài bản đồ này bị
+#      xếp vào nhóm chưa xác minh và phải qua thêm một vòng rào ở tầng nhận
+#      diện, nên thiếu ngành không chỉ mất phần bình luận ngành mà còn làm
+#      chính việc tra giá kém tin cậy đi.
+#
+# LƯU Ý khi thêm mã:
+#   - _SECTOR_SAMPLE_SIZE chỉ lấy 8 mã ĐẦU của mỗi ngành để tính hiệu suất,
+#     nên hãy xếp các mã vốn hoá lớn / tiêu biểu lên trước.
+#   - Không thêm mã trùng từ thông dụng đang nằm trong _COMMON_WORD_EXCLUDE /
+#     _LOWERCASE_NOISE_EXCLUDE của stock_analysis (vd CEO, SAN, MUA, BAN, HAI)
+#     - token đó bị lọc bỏ trước khi tra bản đồ nên sẽ không bao giờ nhận ra.
+#     Nếu buộc phải thêm, khai báo nó trong _AMBIGUOUS_KNOWN thay vì ở đây.
+#     test/test_sector_map.py canh giúp điều kiện này.
+#   - Một mã có thể thuộc nhiều ngành (vd REE ở cả industrial lẫn utilities).
 SECTOR_MAP: dict[str, dict] = {
-    "banking":    {"label": "Ngân hàng",                 "symbols": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "HDB", "STB", "EIB", "TPB", "SHB"]},
-    "steel":      {"label": "Thép",                       "symbols": ["HPG", "HSG", "NKG"]},
-    "realestate": {"label": "Bất động sản",               "symbols": ["VIC", "VHM", "NVL", "KDH", "DXG", "PDR", "NLG", "DIG", "VRE", "KBC", "BCM", "HDC"]},
-    "oilgas":     {"label": "Dầu khí",                    "symbols": ["GAS", "PLX", "PVD", "PVT", "PVS", "BSR", "OIL", "PLC"]},
-    "technology": {"label": "Công nghệ",                  "symbols": ["FPT", "CMG", "VGI", "CTR"]},
-    "securities": {"label": "Chứng khoán",                "symbols": ["SSI", "VCI", "HCM", "VND", "VIX", "SHS", "MBS", "BVS"]},
-    "retail":     {"label": "Bán lẻ",                     "symbols": ["MWG", "FRT", "PNJ", "DGW"]},
-    "food":       {"label": "Thực phẩm & Đồ uống",        "symbols": ["VNM", "SAB", "MSN", "DBC", "HAG", "QNS", "MCH"]},
-    "industrial": {"label": "Khu công nghiệp & Xây dựng", "symbols": ["GEX", "CTD", "VCG", "REE", "CII", "KBC", "BCM", "SIP"]},
-    "utilities":  {"label": "Điện & Tiện ích",            "symbols": ["POW", "REE", "GAS", "PLC"]},
-    "logistics":  {"label": "Vận tải & Logistics",        "symbols": ["GMD", "PVT", "ACV", "VJC"]},
+    "banking":    {"label": "Ngân hàng",                 "symbols": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "HDB", "STB", "EIB", "TPB", "SHB", "VIB", "LPB", "SSB", "MSB", "OCB", "NAB", "BAB", "ABB"]},
+    "steel":      {"label": "Thép",                       "symbols": ["HPG", "HSG", "NKG", "TLH", "SMC", "VGS", "TVN"]},
+    "realestate": {"label": "Bất động sản",               "symbols": ["VIC", "VHM", "NVL", "KDH", "DXG", "PDR", "NLG", "DIG", "VRE", "KBC", "BCM", "HDC", "IJC", "SCR", "TCH", "AGG", "NTL", "QCG", "LDG", "HQC", "ITA", "TDC"]},
+    "oilgas":     {"label": "Dầu khí",                    "symbols": ["GAS", "PLX", "PVD", "PVT", "PVS", "BSR", "OIL", "PLC", "PVC", "PVB", "PGD", "CNG"]},
+    "technology": {"label": "Công nghệ",                  "symbols": ["FPT", "CMG", "VGI", "CTR", "ELC", "ITD", "SGT", "FOX"]},
+    "securities": {"label": "Chứng khoán",                "symbols": ["SSI", "VCI", "HCM", "VND", "VIX", "SHS", "MBS", "BVS", "FTS", "BSI", "CTS", "AGR", "VDS", "ORS", "DSC"]},
+    "retail":     {"label": "Bán lẻ",                     "symbols": ["MWG", "FRT", "PNJ", "DGW", "PET", "HAX"]},
+    "food":       {"label": "Thực phẩm & Đồ uống",        "symbols": ["VNM", "SAB", "MSN", "DBC", "HAG", "QNS", "MCH", "KDC", "SBT", "BAF", "HNG", "LSS"]},
+    "seafood":    {"label": "Thuỷ sản",                   "symbols": ["VHC", "ANV", "FMC", "IDI", "MPC", "ASM", "ACL", "CMX"]},
+    "rubber":     {"label": "Cao su & Săm lốp",           "symbols": ["GVR", "PHR", "DPR", "DRC", "CSM", "DRI", "TRC", "RTB"]},
+    "chemicals":  {"label": "Hoá chất & Phân bón",        "symbols": ["DGC", "DPM", "DCM", "CSV", "LAS", "BFC", "DDV"]},
+    "insurance":  {"label": "Bảo hiểm",                   "symbols": ["BVH", "BMI", "PVI", "MIG", "PTI", "BIC", "ABI"]},
+    "aviation":   {"label": "Hàng không",                 "symbols": ["HVN", "VJC", "ACV", "SCS", "SAS", "AST", "NCT"]},
+    "textile":    {"label": "Dệt may",                    "symbols": ["VGT", "TNG", "MSH", "TCM", "STK", "GIL"]},
+    "pharma":     {"label": "Dược phẩm & Y tế",           "symbols": ["DHG", "IMP", "DBD", "DVN", "DHT"]},
+    "materials":  {"label": "Vật liệu xây dựng",          "symbols": ["VGC", "HT1", "BMP", "NTP", "VCS", "PTB", "BCC", "CVT", "KSB", "DHA"]},
+    "industrial": {"label": "Khu công nghiệp & Xây dựng", "symbols": ["GEX", "CTD", "VCG", "REE", "CII", "KBC", "BCM", "SIP", "IDC", "HHV", "LCG", "FCN", "TCD"]},
+    "utilities":  {"label": "Điện & Tiện ích",            "symbols": ["POW", "REE", "GAS", "PLC", "NT2", "PC1", "GEG", "VSH", "QTP", "HDG"]},
+    "logistics":  {"label": "Vận tải & Logistics",        "symbols": ["GMD", "PVT", "ACV", "VJC", "VTP", "HAH", "VSC", "VOS", "TMS", "PHP"]},
 }
 
 ALL_KNOWN_SYMBOLS: set[str] = {s for meta in SECTOR_MAP.values() for s in meta["symbols"]}
