@@ -1,71 +1,26 @@
 # Zalo gateway
 
-Headless `zca-js` adapter for account B. It runs beside the Python API in the
-same Render container, so the project consumes one Render Free instance.
+Headless `zca-js` adapter for account B, running beside Python in the same Render container.
 
-## 1. Create the account-B session locally
+## Telegram QR login and pairing
 
-```bash
-cd zalo-gateway
-npm install
-npm run login:qr
-```
+Configure `ZALO_ENABLED=true`, `ZALO_BRIDGE_SECRET` and `SETTINGS_ENC_KEY`, then redeploy. `ZALO_CONTROLLER_ID` may now be left empty.
 
-Open `zalo-qr.png`, scan it with account B and approve the login. The command
-writes `zalo-session.json` with mode `0600` and removes the QR image after
-success. Never commit or send that session file.
+1. In the private Telegram chat, send `/zalo`.
+2. Scan the QR with account B and approve it.
+3. Send `/zalo` again. Telegram returns a six-digit pairing code.
+4. From account A, message B exactly: `/pair 123456` using the current code.
+5. B confirms the pairing and stores A's UID encrypted in Supabase.
 
-Map the generated fields to Render:
+The code expires after five minutes, is single-use and is only displayed to the allowed Telegram user. After pairing, A can use chat, stock, prompt, group and summary commands normally.
 
-```text
-accountId  -> ZALO_BOT_ACCOUNT_ID
-cookie     -> ZALO_COOKIE_JSON (JSON array, one line)
-imei       -> ZALO_IMEI
-userAgent  -> ZALO_USER_AGENT
-```
+Use `/zalologout` in Telegram to close B's listener and delete both the saved Zalo session and controller pairing.
 
-## 2. Configure Render
+## Security and operations
 
-Set these environment variables before enabling the process:
-
-```env
-ZALO_ENABLED=false
-ZALO_COOKIE_JSON=[]
-ZALO_IMEI=
-ZALO_USER_AGENT=
-ZALO_CONTROLLER_ID=
-ZALO_BOT_ACCOUNT_ID=zalo-bot
-ZALO_BRIDGE_SECRET=
-```
-
-Generate the bridge secret with:
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-After all values are saved, set `ZALO_ENABLED=true` and redeploy. The gateway
-connects to `http://127.0.0.1:$PORT/internal/zalo` by default.
-
-## Commands from account A
-
-```text
-/nhomzalo
-/nhom
-/themnhom <group_id> <alias>
-/xoanhom <group_id hoặc alias>
-/tongket <group> [24h|7d|homnay|homqua]
-```
-
-Daily summaries run after 09:00 Asia/Ho_Chi_Minh and are delivered from B to A
-through the persistent outbox.
-
-## Operational constraints
-
-- Use one dedicated account B and one listener only.
-- Do not open Zalo Web with B while the gateway is active; it can disconnect the listener.
-- Keep `ZALO_ENABLED=false` until all credentials exist, otherwise supervisor
-  will restart a failing process repeatedly.
-- Render filesystem is ephemeral; session values live in environment variables,
-  group messages and summaries live in Supabase.
-- `zca-js` is unofficial and can cause account restrictions. Use at your own risk.
+- The control server binds only to `127.0.0.1:9901`.
+- Session and controller records use `SETTINGS_ENC_KEY` before storage.
+- Never expose the control port or share the QR/pairing code.
+- Only one B listener and one active pairing code are allowed.
+- Do not open Zalo Web with B while the gateway is active.
+- `zca-js` is unofficial and may cause account restrictions.
