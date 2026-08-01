@@ -1,51 +1,12 @@
 import type { GatewayConfig } from "./config.js";
-
-export type IncomingDirectMessage = { senderId: string; conversationId: string; messageId: string; text: string };
-export type IncomingGroupMessage = { groupId: string; messageId: string; senderId: string; senderName: string; text: string; sentAtMs: number };
-type BridgeResponse = { messages: string[]; provider?: string | null };
-type GroupConfig = { group_id: string; alias: string };
-export type OutboxItem = { id: number; content: string };
-
-function headers(config: GatewayConfig): Record<string, string> {
-  return { "content-type": "application/json", "x-zalo-bridge-secret": config.bridgeSecret };
-}
-
-async function checked(response: Response, label: string): Promise<Response> {
-  if (!response.ok) throw new Error(`${label} returned ${response.status}: ${(await response.text()).slice(0, 200)}`);
-  return response;
-}
-
-export async function callBridge(config: GatewayConfig, message: IncomingDirectMessage): Promise<BridgeResponse> {
-  const response = await fetch(`${config.bridgeBaseUrl}/message`, {
-    method: "POST", headers: { ...headers(config), "idempotency-key": `zalo:${config.accountId}:${message.messageId}` },
-    body: JSON.stringify({ account_id: config.accountId, sender_id: message.senderId, conversation_id: message.conversationId, message_id: message.messageId, text: message.text }),
-    signal: AbortSignal.timeout(240_000),
-  });
-  return (await (await checked(response, "Bridge")).json()) as BridgeResponse;
-}
-
-export async function fetchAllowedGroups(config: GatewayConfig): Promise<Set<string>> {
-  const response = await fetch(`${config.bridgeBaseUrl}/groups/${encodeURIComponent(config.accountId)}`, { headers: headers(config), signal: AbortSignal.timeout(15_000) });
-  const groups = (await (await checked(response, "Group config")).json()) as GroupConfig[];
-  return new Set(groups.map((group) => String(group.group_id)));
-}
-
-export async function storeGroupMessage(config: GatewayConfig, message: IncomingGroupMessage): Promise<void> {
-  const response = await fetch(`${config.bridgeBaseUrl}/group-message`, {
-    method: "POST", headers: headers(config),
-    body: JSON.stringify({ account_id: config.accountId, group_id: message.groupId, message_id: message.messageId, sender_id: message.senderId, sender_name: message.senderName, text: message.text, sent_at_ms: message.sentAtMs }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  await checked(response, "Group message bridge");
-}
-
-export async function fetchOutbox(config: GatewayConfig): Promise<OutboxItem[]> {
-  const url = `${config.bridgeBaseUrl}/outbox/${encodeURIComponent(config.accountId)}/${encodeURIComponent(config.controllerId)}`;
-  const response = await fetch(url, { headers: headers(config), signal: AbortSignal.timeout(15_000) });
-  return (await (await checked(response, "Outbox")).json()) as OutboxItem[];
-}
-
-export async function ackOutbox(config: GatewayConfig, itemId: number): Promise<void> {
-  const response = await fetch(`${config.bridgeBaseUrl}/outbox/${itemId}/ack`, { method: "POST", headers: headers(config), signal: AbortSignal.timeout(15_000) });
-  await checked(response, "Outbox ack");
-}
+export type IncomingDirectMessage={senderId:string;conversationId:string;messageId:string;text:string}; export type IncomingGroupMessage={groupId:string;messageId:string;senderId:string;senderName:string;text:string;sentAtMs:number}; export type OutboxItem={id:number;content:string};
+const headers=(c:GatewayConfig)=>({"content-type":"application/json","x-zalo-bridge-secret":c.bridgeSecret});
+async function checked(r:Response,label:string){if(!r.ok)throw new Error(`${label} returned ${r.status}: ${(await r.text()).slice(0,200)}`);return r;}
+export async function loadSavedSession(c:GatewayConfig){const r=await fetch(`${c.bridgeBaseUrl}/session`,{headers:headers(c)});return await (await checked(r,"Session load")).json() as any;}
+export async function saveSession(c:GatewayConfig,s:any){await checked(await fetch(`${c.bridgeBaseUrl}/session`,{method:"PUT",headers:headers(c),body:JSON.stringify(s)}),"Session save");}
+export async function clearSession(c:GatewayConfig){await checked(await fetch(`${c.bridgeBaseUrl}/session`,{method:"DELETE",headers:headers(c)}),"Session clear");}
+export async function callBridge(c:GatewayConfig,m:IncomingDirectMessage){const r=await fetch(`${c.bridgeBaseUrl}/message`,{method:"POST",headers:headers(c),body:JSON.stringify({account_id:c.accountId,sender_id:m.senderId,conversation_id:m.conversationId,message_id:m.messageId,text:m.text}),signal:AbortSignal.timeout(240000)});return await (await checked(r,"Bridge")).json() as any;}
+export async function fetchAllowedGroups(c:GatewayConfig){const r=await fetch(`${c.bridgeBaseUrl}/groups/${encodeURIComponent(c.accountId)}`,{headers:headers(c)});const g=await (await checked(r,"Groups")).json() as any[];return new Set(g.map(x=>String(x.group_id)));}
+export async function storeGroupMessage(c:GatewayConfig,m:IncomingGroupMessage){await checked(await fetch(`${c.bridgeBaseUrl}/group-message`,{method:"POST",headers:headers(c),body:JSON.stringify({account_id:c.accountId,group_id:m.groupId,message_id:m.messageId,sender_id:m.senderId,sender_name:m.senderName,text:m.text,sent_at_ms:m.sentAtMs})}),"Group message");}
+export async function fetchOutbox(c:GatewayConfig){const r=await fetch(`${c.bridgeBaseUrl}/outbox/${encodeURIComponent(c.accountId)}/${encodeURIComponent(c.controllerId)}`,{headers:headers(c)});return await (await checked(r,"Outbox")).json() as OutboxItem[];}
+export async function ackOutbox(c:GatewayConfig,id:number){await checked(await fetch(`${c.bridgeBaseUrl}/outbox/${id}/ack`,{method:"POST",headers:headers(c)}),"Ack");}
