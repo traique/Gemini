@@ -1,96 +1,27 @@
-import { ThreadType, Zalo, type Credentials } from "zca-js";
-import { ackOutbox, callBridge, fetchAllowedGroups, fetchOutbox, storeGroupMessage } from "./bridge.js";
+import { createServer } from "node:http";
+import { LoginQRCallbackEventType, ThreadType, Zalo, type Credentials } from "zca-js";
+import { ackOutbox, callBridge, clearSession, fetchAllowedGroups, fetchOutbox, loadSavedSession, saveSession, storeGroupMessage } from "./bridge.js";
 import { loadConfig } from "./config.js";
 
-const config = loadConfig();
-const seen = new Map<string, number>();
-let directQueue = Promise.resolve();
-let groupQueue = Promise.resolve();
-let outboxQueue = Promise.resolve();
-let allowedGroups = new Set<string>();
-
-function remember(id: string): boolean {
-  if (seen.has(id)) return false;
-  seen.set(id, Date.now());
-  if (seen.size > 5_000) { const oldest = seen.keys().next().value; if (oldest) seen.delete(oldest); }
-  return true;
+const config=loadConfig(); const zalo=new Zalo({selfListen:false,checkUpdate:false,logging:false});
+let api:any=null, qr:string|null=null, state="idle", loginPromise:Promise<void>|null=null, allowedGroups=new Set<string>();
+const seen=new Set<string>(); let directQueue=Promise.resolve(),groupQueue=Promise.resolve(),outboxQueue=Promise.resolve();
+function remember(id:string){if(seen.has(id))return false;seen.add(id);if(seen.size>5000)seen.delete(seen.values().next().value!);return true;}
+async function sendChunks(target:string,chunks:string[]){for(const chunk of chunks)if(chunk.trim())await api.sendMessage({msg:chunk},target,ThreadType.User);}
+async function refreshGroups(){if(!api)return;try{allowedGroups=await fetchAllowedGroups(config);}catch(e){console.error("[zalo] group refresh failed",e);}}
+async function pollOutbox(){if(!api)return;for(const item of await fetchOutbox(config)){await sendChunks(config.controllerId,item.content.match(/[\s\S]{1,1800}/g)||[item.content]);await ackOutbox(config,item.id);}}
+async function listGroups(threadId:string){const response:any=await api.getAllGroups();const ids=Object.keys(response?.gridVerMap||{});const lines=[ids.length?"Các nhóm tài khoản B đang tham gia:":"Chưa có nhóm."];for(const id of ids.slice(0,100)){try{const info:any=await api.getGroupInfo(id);const data=info?.changed_groups?.[id]||info?.gridInfoMap?.[id];lines.push(`• ${data?.name||"Không rõ tên"} — ${id}`);}catch{lines.push(`• ${id}`);}}await sendChunks(threadId,lines.join("\n").match(/[\s\S]{1,1800}/g)||lines);}
+async function attach(next:any){
+ api=next; state="connected"; qr=null; config.accountId=String(api.getOwnId()||config.accountId); await refreshGroups();
+ const listener:any=api.listener;
+ listener.on("message",(m:any)=>{if(m.isSelf)return;const text=typeof m.data?.content==="string"?m.data.content.trim():"";const sender=String(m.data?.uidFrom||"");const id=String(m.data?.msgId||m.data?.cliMsgId||"");if(!text||!id||!remember(id))return;
+  if(m.type===ThreadType.Group){const gid=String(m.threadId);if(!allowedGroups.has(gid))return;let ts=Number(m.data?.ts||Date.now());if(ts<1e12)ts*=1000;groupQueue=groupQueue.then(()=>storeGroupMessage(config,{groupId:gid,messageId:id,senderId:sender,senderName:String(m.data?.dName||""),text,sentAtMs:ts})).catch(console.error);return;}
+  if(m.type!==ThreadType.User||sender!==config.controllerId)return;directQueue=directQueue.then(async()=>{if(text.toLowerCase()==="/nhomzalo")return listGroups(String(m.threadId));const result=await callBridge(config,{senderId:sender,conversationId:String(m.threadId),messageId:id,text});await sendChunks(String(m.threadId),result.messages);if(/^\/(themnhom|xoanhom)\b/i.test(text))await refreshGroups();}).catch(console.error);
+ });
+ listener.on("disconnected",()=>{api=null;state="disconnected";}); listener.on("closed",()=>{api=null;state="closed";}); listener.on("error",(e:any)=>console.error("[zalo] listener error",e)); listener.start(); console.log(`[zalo] listener started account=${config.accountId}`);
 }
-
-async function sendChunks(api: any, threadId: string, chunks: string[]): Promise<void> {
-  for (const chunk of chunks) if (chunk.trim()) await api.sendMessage({ msg: chunk }, threadId, ThreadType.User);
-}
-
-async function refreshGroups(): Promise<void> {
-  try { allowedGroups = await fetchAllowedGroups(config); console.log(`[zalo] tracking ${allowedGroups.size} group(s)`); }
-  catch (error) { console.error("[zalo] cannot refresh group allowlist", error); }
-}
-
-async function listAvailableGroups(api: any, threadId: string): Promise<void> {
-  const response: any = await api.getAllGroups();
-  const ids = Object.keys(response?.gridVerMap || {});
-  const lines = [ids.length ? "Các nhóm tài khoản B đang tham gia:" : "Tài khoản B chưa tham gia nhóm nào."];
-  for (const id of ids.slice(0, 100)) {
-    try {
-      const info: any = await api.getGroupInfo(id);
-      const data = info?.changed_groups?.[id] || info?.gridInfoMap?.[id];
-      lines.push(`• ${data?.name || "Không rõ tên"} — ${id}`);
-    } catch { lines.push(`• ${id}`); }
-  }
-  await sendChunks(api, threadId, lines.join("\n").match(/[\s\S]{1,1800}/g) || lines);
-}
-
-async function pollOutbox(api: any): Promise<void> {
-  const items = await fetchOutbox(config);
-  for (const item of items) {
-    const chunks = item.content.match(/[\s\S]{1,1800}/g) || [item.content];
-    await sendChunks(api, config.controllerId, chunks);
-    await ackOutbox(config, item.id);
-  }
-}
-
-async function main(): Promise<void> {
-  const api = await new Zalo({ selfListen: false, checkUpdate: false, logging: false }).login({
-    cookie: config.cookie, imei: config.imei, userAgent: config.userAgent,
-  } as Credentials);
-  console.log(`[zalo] authenticated account=${api.getOwnId()}`);
-  await refreshGroups();
-  setInterval(refreshGroups, config.groupRefreshMs).unref();
-  setInterval(() => { outboxQueue = outboxQueue.then(() => pollOutbox(api)).catch((e) => console.error("[zalo] outbox failed", e)); }, config.outboxPollMs).unref();
-
-  const listener = api.listener as any;
-  listener.on("message", (message: any) => {
-    if (message.isSelf) return;
-    const text = typeof message.data?.content === "string" ? message.data.content.trim() : "";
-    const senderId = String(message.data?.uidFrom || "");
-    const messageId = String(message.data?.msgId || message.data?.cliMsgId || "");
-    if (!text || !messageId || !remember(messageId)) return;
-
-    if (message.type === ThreadType.Group) {
-      const groupId = String(message.threadId);
-      if (!allowedGroups.has(groupId)) return;
-      let sentAtMs = Number(message.data?.ts || Date.now());
-      if (sentAtMs < 1_000_000_000_000) sentAtMs *= 1000;
-      groupQueue = groupQueue.then(() => storeGroupMessage(config, {
-        groupId, messageId, senderId, senderName: String(message.data?.dName || ""), text, sentAtMs,
-      })).catch((error) => console.error("[zalo] cannot store group message", error));
-      return;
-    }
-
-    if (message.type !== ThreadType.User || senderId !== config.controllerId) return;
-    directQueue = directQueue.then(async () => {
-      if (text.toLowerCase() === "/nhomzalo") { await listAvailableGroups(api, String(message.threadId)); return; }
-      const result = await callBridge(config, { senderId, conversationId: String(message.threadId), messageId, text });
-      await sendChunks(api, String(message.threadId), result.messages);
-      if (/^\/(themnhom|xoanhom)\b/i.test(text)) await refreshGroups();
-    }).catch((error) => console.error("[zalo] message processing failed", error));
-  });
-
-  const stop = (event: string, ...args: unknown[]) => { console.error(`[zalo] listener ${event}`, ...args); process.exit(1); };
-  listener.on("disconnected", (...args: unknown[]) => stop("disconnected", ...args));
-  listener.on("closed", (...args: unknown[]) => stop("closed", ...args));
-  listener.on("error", (error: unknown) => console.error("[zalo] listener error", error));
-  listener.start();
-  console.log("[zalo] listener started");
-}
-
-main().catch((error) => { console.error("[zalo] fatal startup error", error); process.exit(1); });
+async function persist(next:any){const c:any=next.getContext();await saveSession(config,{cookie:c.cookie.serializeSync(),imei:c.imei,userAgent:c.userAgent,accountId:String(next.getOwnId())});}
+async function startQr(){if(api||loginPromise)return;state="waiting_qr";qr=null;loginPromise=(async()=>{try{const next=await zalo.loginQR({userAgent:config.userAgent},async(event:any)=>{if(event.type===LoginQRCallbackEventType.QRCodeGenerated){const raw=String(event.data?.image||event.data?.qrData||"");qr=raw.replace(/^data:image\/png;base64,/,"");state="qr_ready";}else if(event.type===LoginQRCallbackEventType.QRCodeScanned)state="scanned";else if(event.type===LoginQRCallbackEventType.QRCodeExpired){qr=null;state="expired";}else if(event.type===LoginQRCallbackEventType.QRCodeDeclined)state="declined";});await persist(next);await attach(next);}catch(e){state="error";console.error("[zalo] QR login failed",e);}finally{loginPromise=null;}})();}
+async function bootstrap(){try{let s:any={};if(config.cookie&&config.imei)s={cookie:config.cookie,imei:config.imei,userAgent:config.userAgent};else s=await loadSavedSession(config);if(s?.cookie&&s?.imei){state="restoring";await attach(await zalo.login({cookie:s.cookie,imei:s.imei,userAgent:s.userAgent||config.userAgent} as Credentials));}else state="awaiting_login";}catch(e){state="awaiting_login";console.error("[zalo] session restore failed",e);}}
+createServer(async(req,res)=>{res.setHeader("content-type","application/json");try{if(req.method==="GET"&&req.url==="/status"){res.end(JSON.stringify({state,connected:!!api,accountId:api?String(api.getOwnId()):null,qr}));return;}if(req.method==="POST"&&req.url==="/login/qr"){await startQr();res.end(JSON.stringify({ok:true,state}));return;}if(req.method==="POST"&&req.url==="/logout"){try{(api?.listener as any)?.stop?.();}catch{}api=null;qr=null;state="awaiting_login";await clearSession(config);res.end(JSON.stringify({ok:true}));return;}res.statusCode=404;res.end(JSON.stringify({error:"not found"}));}catch(e){res.statusCode=500;res.end(JSON.stringify({error:e instanceof Error?e.message:"error"}));}}).listen(config.controlPort,"127.0.0.1",()=>console.log(`[zalo] control server 127.0.0.1:${config.controlPort}`));
+setInterval(()=>refreshGroups(),config.groupRefreshMs).unref();setInterval(()=>{outboxQueue=outboxQueue.then(pollOutbox).catch(console.error);},config.outboxPollMs).unref();bootstrap();

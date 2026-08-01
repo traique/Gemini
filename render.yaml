@@ -1,5 +1,4 @@
-# One Docker web service runs both Python/Telegram and the headless Zalo gateway.
-# Keeping both processes in one service avoids spending ~2x Render Free hours.
+# One Docker service runs Python/Telegram and the local Zalo gateway.
 services:
   - type: web
     name: gemini-telegram-bot
@@ -48,6 +47,8 @@ services:
         value: zalo-bot
       - key: ZALO_BRIDGE_SECRET
         sync: false
+      - key: ZALO_CONTROL_PORT
+        value: "9901"
       - key: ZALO_GROUP_REFRESH_MS
         value: "60000"
       - key: ZALO_OUTBOX_POLL_MS
