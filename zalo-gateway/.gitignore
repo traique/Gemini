@@ -1,0 +1,5 @@
+node_modules/
+dist/
+zalo-session.json
+zalo-qr.png
+.env
