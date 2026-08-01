@@ -27,3 +27,8 @@ class ZaloGroupMessageRequest(BaseModel):
 class ZaloGroupConfig(BaseModel):
     group_id: str
     alias: str
+
+
+class ZaloOutboxItem(BaseModel):
+    id: int
+    content: str

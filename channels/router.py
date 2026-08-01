@@ -4,12 +4,7 @@ import os
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
-from channels.contracts import (
-    ZaloGroupConfig,
-    ZaloGroupMessageRequest,
-    ZaloMessageRequest,
-    ZaloMessageResponse,
-)
+from channels.contracts import ZaloGroupConfig, ZaloGroupMessageRequest, ZaloMessageRequest, ZaloMessageResponse, ZaloOutboxItem
 from channels.group_commands import maybe_handle_group_command
 from channels import zalo_repository
 from core import config
@@ -54,43 +49,39 @@ def _authorize_controller(secret: str | None, sender_id: str) -> None:
 
 
 @router.post("/message", response_model=ZaloMessageResponse)
-async def receive_zalo_message(
-    payload: ZaloMessageRequest,
-    x_zalo_bridge_secret: str | None = Header(default=None),
-) -> ZaloMessageResponse:
+async def receive_zalo_message(payload: ZaloMessageRequest, x_zalo_bridge_secret: str | None = Header(default=None)) -> ZaloMessageResponse:
     _authorize_controller(x_zalo_bridge_secret, payload.sender_id)
     result = await maybe_handle_group_command(payload.account_id, payload.text)
     if result is None:
         result = await handle_channel_text(user_id=_shared_user_id(), text=payload.text.strip())
-    chunks: list[str] = []
-    for message in result.messages:
-        chunks.extend(split_for_zalo(message))
+    chunks = [chunk for message in result.messages for chunk in split_for_zalo(message)]
     return ZaloMessageResponse(messages=chunks, provider=result.provider)
 
 
 @router.get("/groups/{account_id}", response_model=list[ZaloGroupConfig])
-async def get_allowed_groups(
-    account_id: str,
-    x_zalo_bridge_secret: str | None = Header(default=None),
-) -> list[ZaloGroupConfig]:
+async def get_allowed_groups(account_id: str, x_zalo_bridge_secret: str | None = Header(default=None)) -> list[ZaloGroupConfig]:
     _authorize_gateway(x_zalo_bridge_secret)
-    groups = await zalo_repository.list_groups(account_id)
-    return [ZaloGroupConfig(group_id=group_id, alias=alias) for group_id, alias in groups]
+    return [ZaloGroupConfig(group_id=gid, alias=alias) for gid, alias in await zalo_repository.list_groups(account_id)]
 
 
 @router.post("/group-message", status_code=204)
-async def receive_group_message(
-    payload: ZaloGroupMessageRequest,
-    x_zalo_bridge_secret: str | None = Header(default=None),
-) -> Response:
+async def receive_group_message(payload: ZaloGroupMessageRequest, x_zalo_bridge_secret: str | None = Header(default=None)) -> Response:
     _authorize_gateway(x_zalo_bridge_secret)
     await zalo_repository.save_group_message(
-        account_id=payload.account_id,
-        group_id=payload.group_id,
-        message_id=payload.message_id,
-        sender_id=payload.sender_id,
-        sender_name=payload.sender_name,
-        text=payload.text,
-        sent_at_ms=payload.sent_at_ms,
+        account_id=payload.account_id, group_id=payload.group_id, message_id=payload.message_id,
+        sender_id=payload.sender_id, sender_name=payload.sender_name, text=payload.text, sent_at_ms=payload.sent_at_ms,
     )
+    return Response(status_code=204)
+
+
+@router.get("/outbox/{account_id}/{recipient_id}", response_model=list[ZaloOutboxItem])
+async def get_outbox(account_id: str, recipient_id: str, x_zalo_bridge_secret: str | None = Header(default=None)) -> list[ZaloOutboxItem]:
+    _authorize_gateway(x_zalo_bridge_secret)
+    return [ZaloOutboxItem(id=row["id"], content=row["content"]) for row in await zalo_repository.get_pending_outbox(account_id, recipient_id)]
+
+
+@router.post("/outbox/{item_id}/ack", status_code=204)
+async def ack_outbox(item_id: int, x_zalo_bridge_secret: str | None = Header(default=None)) -> Response:
+    _authorize_gateway(x_zalo_bridge_secret)
+    await zalo_repository.mark_outbox_sent(item_id)
     return Response(status_code=204)

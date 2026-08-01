@@ -1,7 +1,8 @@
-"""Deterministic controller commands for the Zalo group allowlist."""
+"""Deterministic controller commands for the Zalo group allowlist and summaries."""
 import asyncpg
 
 from channels import zalo_repository
+from channels.zalo_summary import resolve_window, summarize_group
 from services.channel_chat_service import ChannelResult
 
 
@@ -12,10 +13,7 @@ async def maybe_handle_group_command(account_id: str, text: str) -> ChannelResul
     if command == "/nhom":
         groups = await zalo_repository.list_groups(account_id)
         if not groups:
-            return ChannelResult([
-                "Chưa theo dõi nhóm nào. Dùng /nhomzalo để xem ID, sau đó "
-                "/themnhom <group_id> <tên-gợi-nhớ>."
-            ])
+            return ChannelResult(["Chưa theo dõi nhóm nào. Dùng /nhomzalo để xem ID, sau đó /themnhom <group_id> <tên-gợi-nhớ>."])
         lines = ["📚 Các nhóm đang theo dõi:"]
         lines.extend(f"{index}. {alias} — {group_id}" for index, (group_id, alias) in enumerate(groups, 1))
         return ChannelResult(["\n".join(lines)])
@@ -43,5 +41,18 @@ async def maybe_handle_group_command(account_id: str, text: str) -> ChannelResul
         if not removed:
             return ChannelResult([f"Không tìm thấy nhóm “{target}”."])
         return ChannelResult([f"✅ Đã ngừng theo dõi và xóa dữ liệu đã lưu của nhóm {target}."])
+
+    if command == "/tongket":
+        parts = raw.split()
+        if len(parts) < 2:
+            return ChannelResult(["Cú pháp: /tongket <nhóm> [24h|7d|homnay|homqua]"])
+        target = parts[1]
+        spec = parts[2] if len(parts) >= 3 else "24h"
+        start, end = resolve_window(spec)
+        try:
+            _, _, content = await summarize_group(account_id, target, start, end)
+            return ChannelResult([content])
+        except ValueError as exc:
+            return ChannelResult([str(exc)])
 
     return None
