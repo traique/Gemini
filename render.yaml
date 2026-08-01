@@ -1,21 +1,13 @@
-# Blueprint cho Render - dùng "New +" → "Blueprint" và chọn repo này,
-# Render sẽ tự đọc file này để tạo Web Service đúng cấu hình.
-# Các giá trị "sync: false" cần bạn tự điền trong Render Dashboard
-# (không lưu secret trong file này / trong Git).
+# One Docker web service runs both Python/Telegram and the headless Zalo gateway.
+# Keeping both processes in one service avoids spending ~2x Render Free hours.
 services:
   - type: web
     name: gemini-telegram-bot
-    runtime: python
-    region: singapore  # Gần Việt Nam nhất (oregon/ohio/virginia/frankfurt/singapore)
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: singapore
     plan: free
-    numInstances: 1  # BẮT BUỘC = 1: call_lock (ai/orchestrator.py) và
-                      # GeminiClient singleton (ai/cookie_client.py) chỉ tồn
-                      # tại trong 1 process. Nếu
-                      # service này bị scale ngang lên >1 instance, 2 process
-                      # độc lập sẽ gọi đồng thời lên cùng 1 cookie Google -
-                      # đúng điều assumption "serialize mọi request" muốn tránh.
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn web:api --host 0.0.0.0 --port $PORT
+    numInstances: 1
     healthCheckPath: /
     envVars:
       - key: TELEGRAM_TOKEN
@@ -31,21 +23,39 @@ services:
       - key: WEBHOOK_SECRET
         sync: false
       - key: SETTINGS_ENC_KEY
-        sync: false  # Khuyến nghị bật: tạo bằng
-                      # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+        sync: false
       - key: DIAGNOSE_SECRET
-        sync: false  # Khuyến nghị bật nếu muốn dùng endpoint /diagnose - để
-                      # trống thì endpoint này luôn trả 403 (an toàn hơn).
+        sync: false
       - key: GEMINI_PROXY
-        sync: false  # Optional
+        sync: false
       - key: GOOGLE_AI_STUDIO_API_KEY_1
-        sync: false  # Optional - provider-chain (cookie -> api1 -> api2) khi
-                      # cookie Gemini lỗi, lấy tại https://aistudio.google.com/apikey
+        sync: false
       - key: GOOGLE_AI_STUDIO_API_KEY_2
-        sync: false  # Optional - key thứ 2 (project/tài khoản Google khác) để
-                      # nhân đôi quota free/ngày, dùng khi api1 hết quota (429)
+        sync: false
       - key: GOOGLE_AI_STUDIO_MODEL
         value: gemini-2.5-flash
+      - key: ZALO_ENABLED
+        value: "false"
+      - key: ZALO_COOKIE_JSON
+        sync: false
+      - key: ZALO_IMEI
+        sync: false
+      - key: ZALO_USER_AGENT
+        sync: false
+      - key: ZALO_CONTROLLER_ID
+        sync: false
+      - key: ZALO_BOT_ACCOUNT_ID
+        value: zalo-bot
+      - key: ZALO_BRIDGE_SECRET
+        sync: false
+      - key: ZALO_GROUP_REFRESH_MS
+        value: "60000"
+      - key: ZALO_OUTBOX_POLL_MS
+        value: "15000"
+      - key: ZALO_GROUP_RETENTION_DAYS
+        value: "30"
+      - key: ZALO_DAILY_SUMMARY_HOUR
+        value: "9"
       - key: TELEGRAM_CONNECT_TIMEOUT
         value: "30"
       - key: TELEGRAM_READ_TIMEOUT
