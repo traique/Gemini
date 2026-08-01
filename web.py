@@ -17,6 +17,7 @@ from telegram.ext import Application
 
 import bot_app
 import logging_setup
+from channels.router import router as zalo_router
 from core import config
 
 logging_setup.configure_logging()
@@ -80,6 +81,7 @@ async def lifespan(_: FastAPI):
 
 
 api = FastAPI(lifespan=lifespan)
+api.include_router(zalo_router)
 
 
 @api.api_route("/", methods=["GET", "HEAD"])
