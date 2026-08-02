@@ -1,6 +1,4 @@
-"""Điểm vào cho mọi tin nhắn văn bản thường (không phải lệnh /). Quyết định
-forward sang handlers/stock_handler.py (nhận diện mã cổ phiếu) hay gửi thẳng
-cho ai.orchestrator.chat() (chat tự nhiên, persona Lan Anh)."""
+"""Điểm vào cho mọi tin nhắn văn bản thường (không phải lệnh /)."""
 import asyncio
 import logging
 
@@ -8,19 +6,30 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import messages
-import stock_analysis
 from ai import orchestrator
 from core import database as db
 from handlers import common, stock_handler
 from services import memory_service, tools
 from services.telemetry import telemetry
+from stock import analysis as stock_analysis
 
 logger = logging.getLogger(__name__)
-
-# Giữ tham chiếu mạnh tới task cập nhật trí nhớ dài hạn chạy ngầm sau mỗi lượt
-# chat thành công, tránh bị garbage-collect giữa chừng (task không được await
-# trực tiếp trong luồng trả lời, để không làm chậm phản hồi cho người dùng).
 _background_tasks: set[asyncio.Task] = set()
+
+
+def _track_background_task(task: asyncio.Task) -> None:
+    _background_tasks.add(task)
+
+    def _done(completed: asyncio.Task) -> None:
+        _background_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            completed.result()
+        except Exception:
+            logger.exception("Tác vụ cập nhật trí nhớ chạy nền bị lỗi")
+
+    task.add_done_callback(_done)
 
 
 @common.restricted
@@ -34,25 +43,23 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     route = await stock_handler.maybe_handle(update, user_id, text)
     if route.handled:
         return
-    grounding = route.grounding
 
     prompt_id = await telemetry.start(user_id, "chat", text)
     try:
         tool_result = await tools.maybe_run_tool(user_id, text)
-        combined_grounding = grounding
+        combined_grounding = route.grounding
         if tool_result:
-            combined_grounding = f"{grounding}\n\n{tool_result}" if grounding else tool_result
-
-        # Câu hỏi về dữ liệu thị trường ngoài sàn VN (giá dầu, vàng, tỷ giá,
-        # crypto, chỉ số quốc tế): bot KHÔNG có provider nào cho nhóm này nên
-        # không thể dựng grounding từ code. Ép nhánh có Google Search thật kèm
-        # chỉ thị cấm bịa, thay vì để LLM tự dựng số liệu và cả sự kiện thời sự.
-        require_real_search = stock_analysis.wants_external_market_data(text)
+            combined_grounding = (
+                f"{route.grounding}\n\n{tool_result}" if route.grounding else tool_result
+            )
 
         memory_context = await memory_service.build_memory_context(user_id, query_text=text)
         response = await orchestrator.chat(
-            user_id, text, grounding=combined_grounding, memory_context=memory_context,
-            require_real_search=require_real_search,
+            user_id,
+            text,
+            grounding=combined_grounding,
+            memory_context=memory_context,
+            require_real_search=stock_analysis.wants_external_market_data(text),
         )
         reply_text = (response.text or "").strip()
 
@@ -60,20 +67,16 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if reply_text:
             await db.add_chat_message(user_id, "user", text)
             await db.add_chat_message(user_id, "model", reply_text)
-            reply_out = reply_text
-            mem_task = asyncio.create_task(memory_service.update_memory(user_id, text, reply_text))
-            _background_tasks.add(mem_task)
-            mem_task.add_done_callback(_background_tasks.discard)
-        else:
-            reply_out = ""
+            _track_background_task(
+                asyncio.create_task(memory_service.update_memory(user_id, text, reply_text))
+            )
+        reply_out = reply_text
         if reply_out and getattr(response, "used_fallback", False):
             reply_out += "\n\n⚙️ API"
-        await common.reply_long_text(
-            update.message, reply_out or messages.CHAT_GENERIC_ERROR
-        )
-    except Exception as e:
+        await common.reply_long_text(update.message, reply_out or messages.CHAT_GENERIC_ERROR)
+    except Exception as exc:
         logger.exception("Lỗi chat tự nhiên")
-        await telemetry.failure(prompt_id, "chat", e)
+        await telemetry.failure(prompt_id, "chat", exc)
         await update.message.reply_text(
             "❌ Có lỗi khi trò chuyện với Gemini. Hãy thử lại sau giây lát."
         )
