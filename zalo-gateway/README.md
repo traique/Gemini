@@ -1,26 +1,48 @@
 # Zalo gateway
 
-Headless `zca-js` adapter for account B, running beside Python in the same Render container.
+Node adapter dùng `zca-js` cho tài khoản B, chạy cùng container với FastAPI.
 
-## Telegram QR login and pairing
+## Luồng chính
 
-Configure `ZALO_ENABLED=true`, `ZALO_BRIDGE_SECRET` and `SETTINGS_ENC_KEY`, then redeploy. `ZALO_CONTROLLER_ID` may now be left empty.
+- QR login được điều khiển từ Telegram qua local control server `127.0.0.1:9901`.
+- A ghép đôi bằng `/pair <mã>`; không cần cấu hình UID thủ công.
+- Private text dùng chung Gemini/stock/memory/tools với Telegram.
+- Private image được tải có cookie phiên, giới hạn 8 MB rồi gửi binary sang Python.
+- Group text chỉ được forward khi group ID nằm trong allowlist Supabase.
+- Summary outbox được gửi riêng từ B sang A.
 
-1. In the private Telegram chat, send `/zalo`.
-2. Scan the QR with account B and approve it.
-3. Send `/zalo` again. Telegram returns a six-digit pairing code.
-4. From account A, message B exactly: `/pair 123456` using the current code.
-5. B confirms the pairing and stores A's UID encrypted in Supabase.
+## Cấu hình
 
-The code expires after five minutes, is single-use and is only displayed to the allowed Telegram user. After pairing, A can use chat, stock, prompt, group and summary commands normally.
+```env
+ZALO_ENABLED=true
+ZALO_BRIDGE_SECRET=
+ZALO_CONTROL_PORT=9901
+ZALO_BOT_ACCOUNT_ID=zalo-bot
+ZALO_CONTROLLER_ID=
+ZALO_GROUP_REFRESH_MS=60000
+ZALO_OUTBOX_POLL_MS=15000
+ZALO_GROUP_RETENTION_DAYS=30
+ZALO_DAILY_SUMMARY_HOUR=9
+ZALO_IMAGE_MAX_BYTES=8388608
+```
 
-Use `/zalologout` in Telegram to close B's listener and delete both the saved Zalo session and controller pairing.
+`ZALO_COOKIE_JSON`, `ZALO_IMEI` và `ZALO_USER_AGENT` là fallback; có thể để trống khi dùng `/zalo`.
 
-## Security and operations
+## Đăng nhập
 
-- The control server binds only to `127.0.0.1:9901`.
-- Session and controller records use `SETTINGS_ENC_KEY` before storage.
-- Never expose the control port or share the QR/pairing code.
-- Only one B listener and one active pairing code are allowed.
-- Do not open Zalo Web with B while the gateway is active.
-- `zca-js` is unofficial and may cause account restrictions.
+1. Bật gateway và redeploy.
+2. Telegram: `/zalo`.
+3. B quét và xác nhận QR.
+4. Telegram: `/zalo` lần nữa để lấy mã.
+5. Zalo A → B: `/pair 123456`.
+
+`/zalologout` xóa session B và controller A.
+
+## Bảo mật
+
+- Không public control port.
+- Không log cookie, IMEI hoặc URL media đầy đủ.
+- Chỉ tải media từ allowlist CDN Zalo và kiểm tra lại domain sau redirect.
+- Session/controller phải được mã hóa bằng `SETTINGS_ENC_KEY`.
+- Chỉ chạy một listener và không mở Zalo Web bằng B.
+- `zca-js` không chính thức; sử dụng có rủi ro tài khoản.

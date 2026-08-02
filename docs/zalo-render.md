@@ -1,31 +1,36 @@
-# Deploy Zalo account B on the existing Render service
+# Zalo trên Render
 
-This deployment intentionally uses one Docker web service. `supervisord` keeps
-two processes alive:
+Dự án chạy Uvicorn và zca-js trong cùng một Docker Web Service bằng Supervisor để chỉ tiêu thụ một Render instance.
 
-1. `uvicorn web:api` — Telegram webhook, Gemini and Supabase.
-2. `node zalo-gateway/dist/index.js` — account-B Zalo listener.
+## Rollout
 
-## Safe rollout
+1. Deploy với `ZALO_ENABLED=false` và xác nhận Telegram hoạt động.
+2. Tạo `ZALO_BRIDGE_SECRET` và Fernet `SETTINGS_ENC_KEY` hợp lệ.
+3. Đặt `ZALO_ENABLED=true`, save Environment và redeploy.
+4. Trong Telegram riêng với bot, gửi `/zalo`.
+5. B quét QR và bấm xác nhận trên điện thoại.
+6. Gửi `/zalo` lần nữa để lấy mã dùng một lần.
+7. Từ A nhắn B `/pair <mã>`.
+8. Kiểm tra `/nhomzalo`, thêm nhóm rồi thử `/tongket`.
 
-1. Merge/deploy with `ZALO_ENABLED=false`; verify `/` still returns `status: ok`.
-2. Generate the account-B session locally using `npm run login:qr` inside
-   `zalo-gateway/`.
-3. Add the generated cookie JSON, IMEI, user agent, account ID, controller A ID
-   and a random bridge secret to Render Environment.
-4. Keep every session value secret and ensure `ZALO_COOKIE_JSON` remains valid
-   single-line JSON.
-5. Change `ZALO_ENABLED=true` and redeploy.
-6. In logs, verify `[zalo] authenticated account=...` and `[zalo] listener started`.
-7. From A, send `/nhomzalo`, add only approved groups, then test `/tongket`.
+Không cần copy cookie/IMEI thủ công. Session B và UID A được mã hóa trong Supabase, sau restart gateway tự khôi phục.
+
+## Log khỏe
+
+```text
+[zalo] control server 127.0.0.1:9901
+[zalo] listener started account=...
+```
+
+Node có thể báo đang chờ Python và retry `127.0.0.1:10000` trong vài giây đầu. Đây là race startup bình thường nếu sau đó listener khởi động.
 
 ## Rollback
 
-Set `ZALO_ENABLED=false` and redeploy. Telegram/Python remains active and the
-Zalo process becomes an idle process, with no need to revert the Docker runtime.
+Đặt `ZALO_ENABLED=false` và redeploy. Telegram/Python vẫn hoạt động. `/zalologout` dùng để xóa session và controller trước khi tắt nếu cần thu hồi quyền.
 
-## Resource notes
+## Tài nguyên
 
-Both processes share the Free instance memory. Keep the gateway text-only,
-process summaries sequentially and avoid Electron, Chromium, Deplao UI, media
-caches or multiple Zalo accounts.
+- Một tài khoản B, một listener.
+- Ảnh A → B tối đa 8 MB, xử lý tuần tự và xóa file tạm.
+- Nhóm chỉ thu thập text từ allowlist.
+- Không chạy Electron/Chromium hoặc nhiều account Zalo trên Render Free.
