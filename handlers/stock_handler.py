@@ -3,24 +3,22 @@ import logging
 from typing import NamedTuple
 
 import messages
-import stock_analysis
 import tg_format
 from handlers import common
 from services.telemetry import telemetry
+from stock import analysis as stock_analysis
 
 logger = logging.getLogger(__name__)
+
 
 class StockRouteResult(NamedTuple):
     handled: bool
     grounding: str
 
+
 async def maybe_handle(update, user_id: int, text: str) -> StockRouteResult:
     symbols = await stock_analysis.find_valid_symbols(text)
     if not symbols:
-        # Không nhận ra mã nào, nhưng câu hỏi RÕ RÀNG đang hỏi giá: chặn ở
-        # đây thay vì để rơi xuống orchestrator.chat. Không có block
-        # "[DỮ LIỆU GIÁ THỰC TẾ ...]" thì Gemini gần như chắc chắn dựng ra
-        # một con số nghe hợp lý rồi trình bày như số liệu thật.
         if stock_analysis.looks_like_price_question(text):
             await update.message.reply_text(messages.STOCK_SYMBOL_UNRESOLVED)
             return StockRouteResult(handled=True, grounding="")
@@ -30,7 +28,7 @@ async def maybe_handle(update, user_id: int, text: str) -> StockRouteResult:
         await _handle_portfolio_analysis(update, user_id, symbols, text)
         return StockRouteResult(handled=True, grounding="")
 
-    if stock_analysis.wants_full_analysis(text):
+    if stock_analysis.wants_full_analysis(text, symbols):
         await _handle_full_analysis(update, user_id, symbols, text)
         return StockRouteResult(handled=True, grounding="")
 
@@ -41,6 +39,7 @@ async def maybe_handle(update, user_id: int, text: str) -> StockRouteResult:
     grounding = await stock_analysis.build_price_grounding(symbols)
     return StockRouteResult(handled=False, grounding=grounding)
 
+
 async def _handle_portfolio_analysis(update, user_id: int, symbols: list[str], user_text: str) -> None:
     prompt_id = await telemetry.start(user_id, "portfolio_analysis", ",".join(symbols))
     status = await update.message.reply_text("🔍 Đang soi danh mục cho anh, đợi em xíu nha...")
@@ -48,15 +47,16 @@ async def _handle_portfolio_analysis(update, user_id: int, symbols: list[str], u
         result_text = await stock_analysis.analyze_portfolio(symbols, user_text, user_id=user_id)
         await telemetry.success(prompt_id, "portfolio_analysis", result_text)
         await common.reply_long_text(update.message, result_text)
-    except Exception as e:
+    except Exception as exc:
         logger.exception("Lỗi phân tích danh mục")
-        await telemetry.failure(prompt_id, "portfolio_analysis", e)
+        await telemetry.failure(prompt_id, "portfolio_analysis", exc)
         await update.message.reply_text("❌ Có lỗi khi soi danh mục, anh thử lại sau nhé.")
     finally:
         try:
             await status.delete()
         except Exception:
-            pass
+            logger.debug("Không xóa được status phân tích danh mục", exc_info=True)
+
 
 async def _handle_full_analysis(update, user_id: int, symbols: list[str], user_text: str) -> None:
     for symbol in symbols:
@@ -66,20 +66,22 @@ async def _handle_full_analysis(update, user_id: int, symbols: list[str], user_t
             result_text = await stock_analysis.analyze_symbol(symbol, user_text=user_text, user_id=user_id)
             await telemetry.success(prompt_id, "stock_analysis", result_text)
             await common.reply_long_text(update.message, result_text)
-        except Exception as e:
+        except Exception as exc:
             logger.exception("Lỗi phân tích %s", symbol)
-            await telemetry.failure(prompt_id, "stock_analysis", e)
+            await telemetry.failure(prompt_id, "stock_analysis", exc)
             await update.message.reply_text(messages.STOCK_ANALYZE_FAILED.format(symbol=symbol))
         finally:
             try:
                 await status.delete()
             except Exception:
-                pass
+                logger.debug("Không xóa được status phân tích %s", symbol, exc_info=True)
+
 
 async def _handle_price_quote(update, user_id: int, symbols: list[str]) -> None:
-    prompt_ids = [await telemetry.start(user_id, "stock_price", s) for s in symbols]
+    prompt_ids = [await telemetry.start(user_id, "stock_price", symbol) for symbol in symbols]
     results = await asyncio.gather(
-        *[stock_analysis.quick_quote(s) for s in symbols], return_exceptions=True
+        *(stock_analysis.quick_quote(symbol) for symbol in symbols),
+        return_exceptions=True,
     )
     ok_results: list[str] = []
     for symbol, prompt_id, result in zip(symbols, prompt_ids, results):
