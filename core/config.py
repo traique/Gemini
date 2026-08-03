@@ -218,7 +218,8 @@ WEBHOOK_BASE_URL = (
 # Khoá mã hoá đối xứng (Fernet) dùng để mã hoá các giá trị nhạy cảm (vd
 # __Secure-1PSIDTS đã rotate) trước khi lưu vào bảng settings trong DB. Tạo
 # bằng: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-# Nếu để trống, bot vẫn chạy được nhưng giá trị sẽ lưu dạng plaintext (kém an toàn hơn).
+# Bắt buộc trong mọi runtime có DB: cookie/session không được phép hạ cấp về
+# plaintext khi thiếu hoặc cấu hình sai khoá.
 SETTINGS_ENC_KEY = os.getenv("SETTINGS_ENC_KEY", "").strip() or None
 
 # Secret riêng cho endpoint /diagnose (KHÔNG dùng chung với WEBHOOK_SECRET), truyền
@@ -236,6 +237,8 @@ def validate(require_webhook: bool = False) -> None:
         missing.append("GEMINI_SECURE_1PSID")
     if not DATABASE_URL:
         missing.append("DATABASE_URL")
+    if not SETTINGS_ENC_KEY:
+        missing.append("SETTINGS_ENC_KEY")
 
     if require_webhook:
         if not WEBHOOK_SECRET:
@@ -252,12 +255,13 @@ def validate(require_webhook: bool = False) -> None:
             + "\nXem hướng dẫn trong README.md"
         )
 
-    # Cảnh báo (không chặn startup): thiếu SETTINGS_ENC_KEY thì core/crypto.py
-    # lưu thẳng plaintext vào bảng settings. Trước đây việc này diễn ra hoàn
-    # toàn âm thầm, dễ tưỏng cookie đã được mã hoá.
-    if not SETTINGS_ENC_KEY:
-        logger.warning(
-            "SETTINGS_ENC_KEY chưa được set: cookie __Secure-1PSIDTS sẽ được lưu "
-            "DẠNG PLAINTEXT trong bảng settings. Tạo khoá bằng: python -c "
-            "\"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
-        )
+    try:
+        from cryptography.fernet import Fernet
+
+        Fernet(SETTINGS_ENC_KEY.encode())
+    except Exception as exc:
+        raise RuntimeError(
+            "SETTINGS_ENC_KEY không hợp lệ; cần Fernet key URL-safe base64 44 ký tự. "
+            "Tạo bằng: python -c \"from cryptography.fernet import Fernet; "
+            "print(Fernet.generate_key().decode())\""
+        ) from exc
