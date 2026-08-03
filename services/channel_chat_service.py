@@ -9,6 +9,7 @@ from core import database as db
 from services import memory_service, tools
 from services.channel_command_service import maybe_handle_command
 from services.telemetry import telemetry
+from services.background_tasks import stop_tracked_tasks
 from stock import analysis as stock_analysis
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,16 @@ def _track_background_task(task: asyncio.Task) -> None:
             logger.exception("Channel background task failed")
 
     task.add_done_callback(_done)
+
+
+async def stop_background_tasks() -> None:
+    """Drain các lượt cập nhật memory của Zalo trước khi đóng database."""
+    await stop_tracked_tasks(
+        _background_tasks,
+        timeout=15.0,
+        logger=logger,
+        label="channel memory",
+    )
 
 
 def split_for_zalo(text: str, limit: int = 1800) -> list[str]:

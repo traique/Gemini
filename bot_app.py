@@ -1,4 +1,5 @@
 """Factory đăng ký handler dùng chung cho long polling và webhook."""
+import asyncio
 import logging
 
 from telegram import BotCommand
@@ -10,6 +11,8 @@ import tg_format
 from ai import orchestrator
 from core import config, database as db
 from handlers import chat_router, commands, media_handler, zalo_login
+from services import channel_chat_service
+from services.background_tasks import stop_tracked_tasks
 from stock import providers as stock_providers
 
 logger = logging.getLogger(__name__)
@@ -41,9 +44,45 @@ async def _post_init(app):
 
 
 async def _post_shutdown(app):
-    await scheduler.stop()
-    await stock_providers.close_http_client()
-    await db.close_pool()
+    async def run_step(label, awaitable):
+        try:
+            await awaitable
+        except Exception:
+            logger.exception("Shutdown step lỗi: %s", label)
+
+    await run_step("Telegram scheduler", scheduler.stop())
+    # Memory tasks cần dùng DB nên phải được drain trước khi đóng pool.
+    await run_step("Telegram memory tasks", chat_router.stop_background_tasks())
+    await run_step("channel memory tasks", channel_chat_service.stop_background_tasks())
+
+    # Dừng các AI task dài hạn và alert task trước khi đóng Gemini/DB. Giữ
+    # việc quản lý lifecycle tập trung tại app factory để cả polling và webhook
+    # dùng chung đúng một thứ tự shutdown.
+    probe_task = orchestrator._probe_task
+    orchestrator._probe_task = None
+    if probe_task is not None and not probe_task.done():
+        probe_task.cancel()
+        await asyncio.gather(probe_task, return_exceptions=True)
+
+    await run_step(
+        "provider alert tasks",
+        stop_tracked_tasks(
+            orchestrator.provider_state_module._background_tasks,
+            timeout=5.0,
+            logger=logger,
+            label="provider alert",
+        ),
+    )
+
+    # reset_client() cancel persist loop nhưng phiên bản hiện tại chưa await
+    # task đó; giữ handle trước khi reset rồi await để không rò task lúc đóng.
+    persist_task = orchestrator.cookie_client._persist_task
+    await run_step("Gemini cookie client", orchestrator.cookie_client.reset_client())
+    if persist_task is not None:
+        await asyncio.gather(persist_task, return_exceptions=True)
+
+    await run_step("stock HTTP client", stock_providers.close_http_client())
+    await run_step("database pool", db.close_pool())
 
 
 def build_application():

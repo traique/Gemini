@@ -16,6 +16,7 @@ import logging_setup
 from channels.router import router as zalo_router
 from channels import zalo_scheduler
 from core import config
+from services.background_tasks import stop_tracked_tasks
 
 logging_setup.configure_logging()
 logger = logging.getLogger(__name__)
@@ -24,6 +25,23 @@ _background_tasks: set[asyncio.Task] = set()
 _diagnose_lock = asyncio.Lock()
 _seen_updates: "collections.OrderedDict[int, None]" = collections.OrderedDict()
 _SEEN_MAX = 1000
+
+
+async def _stop_webhook_tasks() -> None:
+    """Drain request handlers, rồi huỷ lượt treo trước khi đóng app/DB."""
+    await stop_tracked_tasks(
+        _background_tasks,
+        timeout=30.0,
+        logger=logger,
+        label="Telegram webhook",
+    )
+
+
+async def _safe_shutdown(label: str, awaitable) -> None:
+    try:
+        await awaitable
+    except Exception:
+        logger.exception("Shutdown step lỗi: %s", label)
 
 
 def _already_seen(update_id: int) -> bool:
@@ -39,18 +57,40 @@ async def lifespan(_: FastAPI):
     config.validate(require_webhook=True)
     config.ensure_media_dir()
     application = bot_app.build_application()
-    await application.initialize()
-    await bot_app._post_init(application)
-    await application.start()
-    webhook_url = config.WEBHOOK_BASE_URL.rstrip("/") + config.WEBHOOK_PATH
-    await application.bot.set_webhook(url=webhook_url, secret_token=config.WEBHOOK_SECRET, allowed_updates=["message"])
-    logger.info("Webhook đã set tới: %s", webhook_url)
-    zalo_scheduler.start()
-    yield
-    await zalo_scheduler.stop()
-    logger.info("Đang tắt bot...")
-    await application.stop()
-    await application.shutdown()
+    initialized = False
+    app_started = False
+    app_resources_started = False
+    try:
+        await application.initialize()
+        initialized = True
+        # Cleanup functions đều idempotent; đánh dấu trước để vẫn dọn được
+        # phần tài nguyên đã khởi tạo nếu _post_init lỗi giữa chừng.
+        app_resources_started = True
+        await bot_app._post_init(application)
+        await application.start()
+        app_started = True
+        webhook_url = config.WEBHOOK_BASE_URL.rstrip("/") + config.WEBHOOK_PATH
+        await application.bot.set_webhook(
+            url=webhook_url,
+            secret_token=config.WEBHOOK_SECRET,
+            allowed_updates=["message"],
+        )
+        logger.info("Webhook đã set tới: %s", webhook_url)
+        zalo_scheduler.start()
+        yield
+    finally:
+        logger.info("Đang tắt bot...")
+        await _safe_shutdown("Zalo scheduler", zalo_scheduler.stop())
+        await _safe_shutdown("webhook tasks", _stop_webhook_tasks())
+        if app_started:
+            await _safe_shutdown("Telegram application stop", application.stop())
+        # Khi tự quản lý lifecycle FastAPI, Application.shutdown() không gọi
+        # callback post_shutdown đã đăng ký ở builder; phải gọi cleanup rõ ràng.
+        if app_resources_started:
+            await _safe_shutdown("application resources", bot_app._post_shutdown(application))
+        if initialized:
+            await _safe_shutdown("Telegram application shutdown", application.shutdown())
+        application = None
 
 
 api = FastAPI(lifespan=lifespan)

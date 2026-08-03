@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from channels import zalo_repository
+from channels import zalo_repository, zalo_session
 from channels.zalo_summary import summarize_group
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,20 @@ _task: asyncio.Task | None = None
 
 
 def _enabled() -> bool:
-    return bool(os.getenv("ZALO_BRIDGE_SECRET", "").strip() and os.getenv("ZALO_CONTROLLER_ID", "").strip())
+    # Controller có thể được ghép đôi động và lưu mã hoá trong DB. Không yêu
+    # cầu ZALO_CONTROLLER_ID trong env, nếu không scheduler sẽ không bao giờ
+    # khởi động sau luồng /pair mới.
+    enabled = os.getenv("ZALO_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    return enabled and bool(os.getenv("ZALO_BRIDGE_SECRET", "").strip())
+
+
+async def _controller_id() -> str:
+    return (
+        os.getenv("ZALO_CONTROLLER_ID", "").strip()
+        or await zalo_session.load_controller()
+    )
 
 
 def _hour() -> int:
@@ -31,7 +44,11 @@ async def _run_due_digest() -> None:
         return
     start = end - timedelta(days=1)
     account_id = os.getenv("ZALO_BOT_ACCOUNT_ID", "zalo-bot").strip() or "zalo-bot"
-    recipient_id = os.getenv("ZALO_CONTROLLER_ID", "").strip()
+    recipient_id = await _controller_id()
+    if not recipient_id:
+        logger.info("Chưa có Zalo controller; bỏ qua lượt tổng kết này.")
+        await zalo_repository.cleanup_old_messages(account_id)
+        return
     for group_id, alias in await zalo_repository.list_groups(account_id):
         if await zalo_repository.summary_exists(account_id, group_id, "daily", start, end):
             continue

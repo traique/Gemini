@@ -10,6 +10,7 @@ from ai import orchestrator
 from core import database as db
 from handlers import common, stock_handler
 from services import memory_service, tools
+from services.background_tasks import stop_tracked_tasks
 from services.telemetry import telemetry
 from stock import analysis as stock_analysis
 
@@ -30,6 +31,16 @@ def _track_background_task(task: asyncio.Task) -> None:
             logger.exception("Tác vụ cập nhật trí nhớ chạy nền bị lỗi")
 
     task.add_done_callback(_done)
+
+
+async def stop_background_tasks() -> None:
+    """Drain các lượt cập nhật memory trước khi database pool bị đóng."""
+    await stop_tracked_tasks(
+        _background_tasks,
+        timeout=15.0,
+        logger=logger,
+        label="Telegram memory",
+    )
 
 
 @common.restricted
