@@ -20,30 +20,35 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Apply cleanup
-        run: python .github/apply_mvp_review.py
-      - name: Install Python dependencies
-        run: pip install -r requirements-dev.txt
-      - name: Format and lint Python
+      - name: Review, verify and commit
+        shell: bash
         run: |
-          ruff check --fix --unsafe-fixes .
-          ruff format .
-          ruff check .
-          ruff format --check .
-      - name: Test Python
-        run: |
-          python -m compileall -q .
-          pytest -q
-      - name: Check TypeScript
-        working-directory: zalo-gateway
-        run: |
-          npm install
-          npm run check
-      - name: Commit reviewed MVP
-        run: |
-          rm -f .github/workflows/apply-mvp-review.yml .github/apply_mvp_review.py
+          set +e
+          {
+            python .github/apply_mvp_review.py
+            pip install -r requirements-dev.txt
+            ruff check --fix --unsafe-fixes .
+            ruff format .
+            ruff check .
+            ruff format --check .
+            python -m compileall -q .
+            pytest -q
+            cd zalo-gateway
+            npm install
+            npm run check
+            cd ..
+          } > /tmp/mvp-review.log 2>&1
+          status=$?
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ "$status" -ne 0 ]; then
+            cp /tmp/mvp-review.log .github/mvp-review-failure.log
+            git add .github/mvp-review-failure.log
+            git commit -m 'chore: capture MVP review failure'
+            git push origin main
+            exit "$status"
+          fi
+          rm -f .github/workflows/apply-mvp-review.yml .github/apply_mvp_review.py .github/mvp-review-failure.log
           git add -A
           git commit -m 'refactor: finalize single-user MVP codebase'
           git push origin main
