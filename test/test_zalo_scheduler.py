@@ -43,7 +43,7 @@ def test_scheduler_can_start_without_controller_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_digest_uses_controller_from_database(monkeypatch):
+async def test_digest_saves_summary_and_outbox_atomically(monkeypatch):
     monkeypatch.delenv("ZALO_CONTROLLER_ID", raising=False)
     monkeypatch.setenv("ZALO_BOT_ACCOUNT_ID", "zalo-bot")
 
@@ -60,13 +60,11 @@ async def test_digest_uses_controller_from_database(monkeypatch):
     async def fake_summarize(*args):
         return None, None, "Nội dung tổng kết"
 
-    async def fake_save_summary(*args):
+    saved = []
+
+    async def fake_save_and_enqueue(*args):
+        saved.append(args)
         return True
-
-    enqueued = []
-
-    async def fake_enqueue(account_id, recipient_id, content):
-        enqueued.append((account_id, recipient_id, content))
 
     async def fake_cleanup(account_id):
         return None
@@ -81,10 +79,19 @@ async def test_digest_uses_controller_from_database(monkeypatch):
     monkeypatch.setattr(zalo_scheduler.zalo_repository, "list_groups", fake_list_groups)
     monkeypatch.setattr(zalo_scheduler.zalo_repository, "summary_exists", fake_summary_exists)
     monkeypatch.setattr(zalo_scheduler, "summarize_group", fake_summarize)
-    monkeypatch.setattr(zalo_scheduler.zalo_repository, "save_summary", fake_save_summary)
-    monkeypatch.setattr(zalo_scheduler.zalo_repository, "enqueue_outbox", fake_enqueue)
-    monkeypatch.setattr(zalo_scheduler.zalo_repository, "cleanup_old_messages", fake_cleanup)
+    monkeypatch.setattr(
+        zalo_scheduler.zalo_repository,
+        "save_summary_and_enqueue",
+        fake_save_and_enqueue,
+    )
+    monkeypatch.setattr(
+        zalo_scheduler.zalo_repository,
+        "cleanup_old_messages",
+        fake_cleanup,
+    )
 
     await zalo_scheduler._run_due_digest()
 
-    assert enqueued == [("zalo-bot", "controller-from-db", "Nội dung tổng kết")]
+    assert len(saved) == 1
+    assert saved[0][0:3] == ("zalo-bot", "group-1", "daily")
+    assert saved[0][-2:] == ("Nội dung tổng kết", "controller-from-db")
