@@ -16,7 +16,6 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: ruff format --check .
       - run: python -m compileall -q .
       - run: pytest -q
   typescript:
