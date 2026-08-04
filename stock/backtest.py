@@ -5,7 +5,7 @@ không" bằng win rate + expectancy theo R trên dữ liệu lịch sử thật
 phải xây một framework quant đầy đủ. Giới hạn có chủ đích (ghi rõ để không
 ai hiểu nhầm đây là công cụ đã production-ready cho việc tối ưu tham số):
 
-- Không mô phỏng phí giao dịch/slippage/trượt giá khi khớp lệnh.
+- Mô phỏng phí mua/bán, thuế bán và slippage bảo thủ.
 - Không tính Sharpe/max drawdown - chỉ win rate & average R multiple.
 - Chỉ đo tín hiệu BUY (WATCH/HOLD/SELL/NO_TRADE không có entry để đo lời/lỗ
   theo kiểu R-multiple; muốn đánh giá SELL cần logic khác, chưa làm ở đây).
@@ -38,7 +38,27 @@ logger = logging.getLogger(__name__)
 
 MIN_BARS_TO_START = 30
 MAX_HOLD_DAYS = 20
-SETTLEMENT_BARS = 3  # VN: hàng về T+2.5 - không thể bán trước phiên thứ 3 sau entry
+SETTLEMENT_BARS = 3
+TRADING_DAYS_PER_YEAR=252
+DEFAULT_BACKTEST_YEARS=5
+DEFAULT_BACKTEST_DAYS=TRADING_DAYS_PER_YEAR*DEFAULT_BACKTEST_YEARS
+BUY_FEE_PCT=0.15
+SELL_FEE_PCT=0.15
+SELL_TAX_PCT=0.10
+SLIPPAGE_PCT=0.10
+OUT_OF_SAMPLE_RATIO=0.30
+@dataclass(frozen=True)
+class TradingCosts:
+    buy_fee_pct: float=BUY_FEE_PCT
+    sell_fee_pct: float=SELL_FEE_PCT
+    sell_tax_pct: float=SELL_TAX_PCT
+    slippage_pct: float=SLIPPAGE_PCT
+DEFAULT_COSTS=TradingCosts()
+def _entry_cost(price,c): return price*(1+c.slippage_pct/100)*(1+c.buy_fee_pct/100)
+def _exit_proceeds(price,c): return price*(1-c.slippage_pct/100)*(1-(c.sell_fee_pct+c.sell_tax_pct)/100)
+def _net_r(entry_raw,exit_raw,stop_raw,c):
+    entry=_entry_cost(entry_raw,c); exit_value=_exit_proceeds(exit_raw,c); stop=_exit_proceeds(stop_raw,c); risk=entry-stop
+    return (round((exit_value-entry)/risk,2) if risk>0 else None,entry,exit_value)
 
 # B6: thống kê backtest theo setup_type, lưu tĩnh sau khi chạy run_backtest()
 # thủ công/định kỳ - build_prompt() (stock_analysis.py) CHỈ ĐỌC file này, KHÔNG
@@ -117,7 +137,13 @@ class BacktestResult:
     avg_r: float | None = None
     total_days_evaluated: int = 0
     buy_signals: int = 0
+    sample: str = 'full'
 
+@dataclass
+class OutOfSampleResult:
+    split_index: int
+    train: BacktestResult
+    test: BacktestResult
 
 def _trend_pct(closes: list[float]) -> float:
     return ((closes[-1] - closes[0]) / closes[0]) * 100 if closes and closes[0] else 0.0
@@ -173,7 +199,7 @@ def _evaluate_day(
 def run_backtest_on_series(
     symbol: str, closes, highs, lows, volumes, dates,
     vnindex_closes, vnindex_highs, vnindex_lows, vnindex_volumes=None,
-    *, min_bars: int = MIN_BARS_TO_START, max_hold_days: int = MAX_HOLD_DAYS,
+    *, min_bars: int = MIN_BARS_TO_START, max_hold_days: int = MAX_HOLD_DAYS, evaluation_start_idx: int | None = None, costs: TradingCosts = DEFAULT_COSTS, sample: str = 'full',
 ) -> BacktestResult:
     """Walk-forward thuần Python trên chuỗi đã có sẵn (không tự fetch mạng) -
     tách riêng khỏi run_backtest() để test được bằng dữ liệu tổng hợp, không
@@ -185,7 +211,7 @@ def run_backtest_on_series(
     open_trade: dict | None = None
     pending: dict | None = None  # tín hiệu BUY vừa phát hiện, chờ vào lệnh ở phiên kế tiếp
 
-    for i in range(min_bars, n):
+    for i in range(max(min_bars, evaluation_start_idx or min_bars), n):
         date_i = dates[i] if i < len(dates) and dates else str(i)
 
         if pending is not None:
@@ -195,7 +221,7 @@ def run_backtest_on_series(
             # đó là lạc quan phi thực tế). Vào lệnh ở close phiên kế tiếp,
             # tương đương độ trễ thực thi 1 phiên.
             open_trade = {
-                "entry_idx": i, "entry": closes[i], "stop": pending["stop"], "target": pending["target"],
+                "entry_idx": i, "entry_raw": closes[i], "stop": pending["stop"], "target": pending["target"],
                 "confidence": pending["confidence"], "setup_type": pending["setup_type"], "date": date_i,
             }
             pending = None
@@ -216,20 +242,16 @@ def run_backtest_on_series(
                 # phiên KẾ TIẾP tín hiệu, khác giá phiên tín hiệu dùng để tính
                 # stop; (b) sau khi thêm T+2.5, lỗ thật có thể sâu hơn stop nếu
                 # giá gap qua trong lúc chờ hàng về - risk tính từ entry thật.
-                exit_price = min(closes[i], open_trade["stop"])
-                risk = open_trade["entry"] - open_trade["stop"]
-                r = round((exit_price - open_trade["entry"]) / risk, 2) if risk > 0 else None
-                trades.append(Trade(symbol, open_trade["date"], open_trade["entry"], date_i, exit_price, "stop_hit", r, open_trade["confidence"], open_trade["setup_type"]))
+                exit_raw=min(closes[i],open_trade["stop"]); r,entry_value,exit_value=_net_r(open_trade["entry_raw"],exit_raw,open_trade["stop"],costs)
+                trades.append(Trade(symbol,open_trade["date"],entry_value,date_i,exit_value,"stop_hit",r,open_trade["confidence"],open_trade["setup_type"]))
                 open_trade = None
             elif hit_target:
-                risk = open_trade["entry"] - open_trade["stop"]
-                r = round((open_trade["target"] - open_trade["entry"]) / risk, 2) if risk > 0 else None
-                trades.append(Trade(symbol, open_trade["date"], open_trade["entry"], date_i, open_trade["target"], "target_hit", r, open_trade["confidence"], open_trade["setup_type"]))
+                r,entry_value,exit_value=_net_r(open_trade["entry_raw"],open_trade["target"],open_trade["stop"],costs)
+                trades.append(Trade(symbol,open_trade["date"],entry_value,date_i,exit_value,"target_hit",r,open_trade["confidence"],open_trade["setup_type"]))
                 open_trade = None
             elif held_days >= max_hold_days:
-                risk = open_trade["entry"] - open_trade["stop"]
-                r = round((closes[i] - open_trade["entry"]) / risk, 2) if risk > 0 else None
-                trades.append(Trade(symbol, open_trade["date"], open_trade["entry"], date_i, closes[i], "timeout", r, open_trade["confidence"], open_trade["setup_type"]))
+                r,entry_value,exit_value=_net_r(open_trade["entry_raw"],closes[i],open_trade["stop"],costs)
+                trades.append(Trade(symbol,open_trade["date"],entry_value,date_i,exit_value,"timeout",r,open_trade["confidence"],open_trade["setup_type"]))
                 open_trade = None
             continue  # không xét tín hiệu mới khi đang có lệnh mở
 
@@ -243,7 +265,7 @@ def run_backtest_on_series(
             }
 
     if open_trade is not None:
-        trades.append(Trade(symbol, open_trade["date"], open_trade["entry"], None, None, "open", None, open_trade["confidence"], open_trade["setup_type"]))
+        trades.append(Trade(symbol, open_trade["date"], _entry_cost(open_trade["entry_raw"], costs), None, None, "open", None, open_trade["confidence"], open_trade["setup_type"]))
 
     closed = [t for t in trades if t.r_multiple is not None]
     win_rate = round(sum(1 for t in closed if t.r_multiple > 0) / len(closed) * 100, 1) if closed else None
@@ -251,25 +273,25 @@ def run_backtest_on_series(
 
     return BacktestResult(
         symbol=symbol, trades=trades, win_rate=win_rate, avg_r=avg_r,
-        total_days_evaluated=total_days_evaluated, buy_signals=buy_signals,
+        total_days_evaluated=total_days_evaluated, buy_signals=buy_signals, sample=sample,
     )
 
+def run_out_of_sample_on_series(symbol,closes,highs,lows,volumes,dates,vnindex_closes,vnindex_highs,vnindex_lows,vnindex_volumes=None,*,test_ratio=OUT_OF_SAMPLE_RATIO,costs=DEFAULT_COSTS):
+    split=max(MIN_BARS_TO_START+1,min(len(closes)-1,int(len(closes)*(1-test_ratio))))
+    train=run_backtest_on_series(symbol,closes[:split],highs[:split],lows[:split],volumes[:split],dates[:split],vnindex_closes[:split],vnindex_highs[:split],vnindex_lows[:split],(vnindex_volumes or [])[:split],costs=costs,sample="train")
+    test=run_backtest_on_series(symbol,closes,highs,lows,volumes,dates,vnindex_closes,vnindex_highs,vnindex_lows,vnindex_volumes or [],evaluation_start_idx=split,costs=costs,sample="out_of_sample")
+    return OutOfSampleResult(split,train,test)
 
-async def run_backtest(symbols: list[str], days: int = 400) -> list[BacktestResult]:
+async def run_backtest(symbols: list[str] | None = None, days: int = DEFAULT_BACKTEST_DAYS) -> list[BacktestResult]:
     """Cần mạng thật (DNSE) - chạy trong môi trường production/bot, KHÔNG chạy
     được trong sandbox không có egress tới DNSE."""
-    vnindex_series = await providers.fetch_ohlcv("VNINDEX", days=days)
-    results = []
-    for sym in symbols:
-        series = await providers.fetch_ohlcv(sym, days=days)
-        if len(series.closes) < MIN_BARS_TO_START + 5:
-            logger.warning("bỏ qua %s: chỉ có %d phiên", sym, len(series.closes))
-            continue
-        results.append(run_backtest_on_series(
-            sym, series.closes, series.highs, series.lows, series.volumes, series.dates,
-            vnindex_series.closes, vnindex_series.highs, vnindex_series.lows, vnindex_series.volumes,
-        ))
-    return results
+    import asyncio
+    symbols=symbols or await providers.fetch_symbol_universe(); vnindex_series=await providers.fetch_ohlcv("VNINDEX",days=days); semaphore=asyncio.Semaphore(8)
+    async def one(sym):
+        async with semaphore: series=await providers.fetch_ohlcv(sym,days=days)
+        if len(series.closes)<MIN_BARS_TO_START+5: return None
+        return run_out_of_sample_on_series(sym,series.closes,series.highs,series.lows,series.volumes,series.dates,vnindex_series.closes,vnindex_series.highs,vnindex_series.lows,vnindex_series.volumes).test
+    return [r for r in await asyncio.gather(*(one(s) for s in symbols)) if r is not None]
 
 
 def format_backtest_summary(results: list[BacktestResult]) -> str:
@@ -285,19 +307,15 @@ def format_backtest_summary(results: list[BacktestResult]) -> str:
     return "\n".join(lines)
 
 
-# Tập mã đại diện mặc định để refresh backtest_stats.json (B6) - không phải
-# universe đầy đủ, chỉ đủ đa dạng ngành để mẫu setup_type không quá mỏng.
-DEFAULT_BACKTEST_SYMBOLS = [
-    "FPT", "HPG", "VCB", "MWG", "VNM", "SSI", "VHM", "GAS", "MBB", "PNJ",
-]
+# Full universe is discovered from VCI, with local sector symbols as fallback.
+DEFAULT_BACKTEST_SYMBOLS=None
 
-
-async def refresh_setup_stats(symbols: list[str] | None = None, days: int = 400) -> dict:
+async def refresh_setup_stats(symbols: list[str] | None = None, days: int = DEFAULT_BACKTEST_DAYS) -> dict:
     """Chạy backtest trên tập mã đại diện rồi ghi thống kê per-setup_type ra
     BACKTEST_STATS_PATH - gọi THỦ CÔNG/ĐỊNH KỲ (vd cron riêng), KHÔNG nằm
     trên đường dẫn phục vụ chat (build_prompt chỉ đọc file này qua
     load_setup_stats/format_setup_stats_line)."""
-    results = await run_backtest(symbols or DEFAULT_BACKTEST_SYMBOLS, days=days)
+    results = await run_backtest(symbols, days=days)
     save_setup_stats(results)
     stats = load_setup_stats()
     logger.info("Đã lưu backtest_stats.json: %s", stats)

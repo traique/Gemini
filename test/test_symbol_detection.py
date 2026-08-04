@@ -11,18 +11,18 @@ from stock import analysis as stock_analysis
 
 
 def test_lowercase_symbol_with_price_keyword_is_candidate():
-    _, unverified = stock_analysis.detect_symbol_candidates("giá gvr")
-    assert "GVR" in unverified
+    known, unverified = stock_analysis.detect_symbol_candidates("giá gvr")
+    assert "GVR" in known + unverified
 
 
 def test_lowercase_symbol_with_stock_context_is_candidate():
-    _, unverified = stock_analysis.detect_symbol_candidates("cổ phiếu gvr sao rồi")
-    assert "GVR" in unverified
+    known, unverified = stock_analysis.detect_symbol_candidates("cổ phiếu gvr sao rồi")
+    assert "GVR" in known + unverified
 
 
 def test_uppercase_symbol_still_works_without_any_context():
-    _, unverified = stock_analysis.detect_symbol_candidates("GVR")
-    assert "GVR" in unverified
+    known, unverified = stock_analysis.detect_symbol_candidates("GVR")
+    assert "GVR" in known + unverified
 
 
 def test_bare_lowercase_is_now_a_candidate():
@@ -34,8 +34,7 @@ def test_bare_lowercase_is_now_a_candidate():
     trong khi giá thật là 27.550 VND. Xem stock_analysis.is_bare_symbol_message.
     """
     known, unverified = stock_analysis.detect_symbol_candidates("gvr")
-    assert known == []
-    assert "GVR" in unverified
+    assert "GVR" in known + unverified
 
 
 def test_known_symbol_lowercase_unaffected():

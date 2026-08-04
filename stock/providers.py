@@ -5,6 +5,7 @@ Nguồn dùng ở đây đều CÔNG KHAI, KHÔNG CẦN API KEY:
 - DNSE price-api (GraphQL): giá khớp lệnh gần nhất, realtime, chỉ áp dụng cho cổ phiếu.
 - Google News RSS: tin tức theo mã.
 """
+import asyncio
 import logging
 import math
 import re
@@ -64,6 +65,8 @@ class OhlcvSeries:
     lows: list = field(default_factory=list)
     volumes: list = field(default_factory=list)
     dates: list = field(default_factory=list)
+    source: str = 'unknown'
+    is_adjusted: bool | None = None
 
     @property
     def price(self) -> float:
@@ -94,13 +97,27 @@ async def fetch_ohlcv(symbol: str, days: int = 90) -> OhlcvSeries:
     cached = _ohlcv_cache.get(key)
     if cached and time.monotonic() - cached[0] < _OHLCV_CACHE_TTL:
         return cached[1]
-    series = await _fetch_ohlcv_uncached(sym, days)
+    primary = await _fetch_ohlcv_dnse(sym, days)
+    from stock.validation import ohlcv_contract_errors
+    primary_errors = ohlcv_contract_errors(primary.closes, primary.highs, primary.lows, primary.volumes, primary.dates)
+    if primary.closes and not primary_errors:
+        series = primary
+    else:
+        _provider_failures["dnse"] += 1
+        logger.warning("DNSE unusable for %s (%s); trying vnstock/VCI", sym, primary_errors or "empty")
+        fallback = await _fetch_ohlcv_vnstock(sym, days)
+        fallback_errors = ohlcv_contract_errors(fallback.closes, fallback.highs, fallback.lows, fallback.volumes, fallback.dates)
+        if fallback.closes and not fallback_errors:
+            series = fallback
+        else:
+            _provider_failures["vnstock"] += 1
+            series = OhlcvSeries(symbol=sym, source="unavailable")
     _evict_expired(_ohlcv_cache, _OHLCV_CACHE_TTL)
     _ohlcv_cache[key] = (time.monotonic(), series)
     return series
 
 
-async def _fetch_ohlcv_uncached(symbol: str, days: int = 90) -> OhlcvSeries:
+async def _fetch_ohlcv_dnse(symbol: str, days: int = 90) -> OhlcvSeries:
     sym = symbol.strip().upper()
     is_index = is_index_symbol(sym)
     endpoint = f"{DNSE_OHLC_BASE}/{'index' if is_index else 'stock'}"
@@ -155,8 +172,49 @@ async def _fetch_ohlcv_uncached(symbol: str, days: int = 90) -> OhlcvSeries:
     volumes = [b[4] for b in bars]
     dates = [datetime.fromtimestamp(b[0], tz=_VN_TZ).strftime("%Y-%m-%d") for b in bars]
 
-    return OhlcvSeries(symbol=sym, closes=closes, highs=highs, lows=lows, volumes=volumes, dates=dates)
+    return OhlcvSeries(symbol=sym, closes=closes, highs=highs, lows=lows, volumes=volumes, dates=dates, source="dnse")
 
+_provider_failures = {"dnse": 0, "vnstock": 0}
+def provider_health_snapshot(): return dict(_provider_failures)
+
+def _fetch_ohlcv_vnstock_sync(symbol, days):
+    try:
+        from vnstock import Vnstock
+        end=datetime.now(_VN_TZ).date(); start=end-timedelta(days=int(days*1.7)+30)
+        df=Vnstock().stock(symbol=dnse_symbol(symbol), source="VCI").quote.history(start=start.isoformat(), end=end.isoformat(), interval="1D")
+        if df is None or df.empty: return OhlcvSeries(symbol=symbol, source="vnstock-vci")
+        cols={str(c).strip().lower():c for c in df.columns}
+        def pick(*names): return next((cols[n] for n in names if n in cols), None)
+        dc,cc,hc,lc,vc=pick("time","date","trading_date"),pick("close"),pick("high"),pick("low"),pick("volume","match_volume")
+        if any(x is None for x in (dc,cc,hc,lc,vc)): return OhlcvSeries(symbol=symbol, source="vnstock-vci")
+        rows=[]
+        for _,r in df.iterrows():
+            try: rows.append((str(r[dc])[:10],float(r[hc]),float(r[lc]),float(r[cc]),float(r[vc])))
+            except (TypeError,ValueError,KeyError): pass
+        rows=sorted(rows)[-days:]
+        if not rows: return OhlcvSeries(symbol=symbol, source="vnstock-vci")
+        median=sorted(r[3] for r in rows)[len(rows)//2]; scale=1 if is_index_symbol(symbol) or median>=1000 else PRICE_SCALE
+        return OhlcvSeries(symbol, [round(r[3]*scale) for r in rows], [round(r[1]*scale) for r in rows], [round(r[2]*scale) for r in rows], [r[4] for r in rows], [r[0] for r in rows], "vnstock-vci")
+    except Exception:
+        logger.warning("vnstock fallback failed for %s", symbol, exc_info=True); return OhlcvSeries(symbol=symbol, source="vnstock-vci")
+async def _fetch_ohlcv_vnstock(symbol, days):
+    try: return await asyncio.wait_for(asyncio.to_thread(_fetch_ohlcv_vnstock_sync, symbol, days), timeout=20)
+    except (TimeoutError, asyncio.TimeoutError): return OhlcvSeries(symbol=symbol, source="vnstock-vci")
+_fetch_ohlcv_uncached = _fetch_ohlcv_dnse
+
+def _fetch_symbol_universe_sync():
+    try:
+        from vnstock import Listing
+        df=Listing(source="VCI").all_symbols(); cols={str(c).lower():c for c in df.columns}
+        c=next((cols[k] for k in ("symbol","ticker","code") if k in cols),None)
+        return sorted({str(v).strip().upper() for v in df[c] if c is not None and _SYMBOL_RE.fullmatch(str(v).strip().upper())})
+    except Exception: return []
+async def fetch_symbol_universe():
+    try: symbols=await asyncio.wait_for(asyncio.to_thread(_fetch_symbol_universe_sync), timeout=30)
+    except (TimeoutError, asyncio.TimeoutError): symbols=[]
+    if symbols: return symbols
+    from stock.sector import ALL_KNOWN_SYMBOLS
+    return sorted(ALL_KNOWN_SYMBOLS)
 
 async def fetch_current_price(symbol: str) -> float:
     series = await fetch_ohlcv(symbol, days=5)

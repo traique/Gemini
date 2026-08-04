@@ -56,6 +56,7 @@ import logging
 from dataclasses import dataclass
 
 from stock import features as feat
+from stock import fundamental_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -559,6 +560,26 @@ async def fetch_sector_pe_average(symbol: str, sample_size: int = 4) -> tuple[fl
 
 
 @dataclass
+class SectorBenchmark:
+    metric: str
+    average: float | None
+    sample: int
+    label: str | None
+async def fetch_sector_benchmark(symbol, sample_size=8):
+    from stock import sector
+    profile=fundamental_profiles.get_profile(symbol); keys=sector.get_symbol_sectors(symbol)
+    if not keys: return SectorBenchmark(profile.benchmark_metric,None,0,None)
+    meta=sector.SECTOR_MAP[keys[0]]; peers=[p for p in meta["symbols"] if p!=symbol.upper()][:sample_size]
+    async def load(peer):
+        try:
+            v=await asyncio.wait_for(asyncio.to_thread(_fetch_valuation_sync,peer),timeout=_FETCH_TIMEOUT_SEC); value=getattr(v,profile.benchmark_metric,None) if v else None
+            return value if value is not None and 0<value<500 else None
+        except Exception: return None
+    values=[v for v in await asyncio.gather(*(load(p) for p in peers)) if v is not None]
+    return SectorBenchmark(profile.benchmark_metric,round(sum(values)/len(values),2) if values else None,len(values),meta["label"])
+
+
+@dataclass
 class FundamentalsBundle:
     valuation: Valuation | None = None
     foreign: ForeignFlowReal | None = None
@@ -568,7 +589,8 @@ class FundamentalsBundle:
     sector_pe_avg: float | None = None
     sector_pe_sample: int = 0
     sector_pe_label: str | None = None
-
+    sector_profile: fundamental_profiles.FundamentalProfile | None = None
+    sector_benchmark: SectorBenchmark | None = None
 
 async def fetch_fundamentals(symbol: str) -> FundamentalsBundle:
     """Lấy song song toàn bộ dữ liệu cơ bản. Không bao giờ raise ra ngoài.
@@ -584,19 +606,22 @@ async def fetch_fundamentals(symbol: str) -> FundamentalsBundle:
             logger.warning("stock_fundamentals lỗi cho %s (%s)", symbol, fn.__name__, exc_info=True)
             return None
 
-    valuation, foreign, foreign_trend, growth, events, sector_pe = await asyncio.gather(
+    valuation, foreign, foreign_trend, growth, events, benchmark = await asyncio.gather(
         _safe(_fetch_valuation_sync, symbol),
         _safe(_fetch_foreign_sync, symbol),
         _safe(_fetch_foreign_history_sync, symbol),
         _safe(_fetch_growth_sync, symbol),
         _safe(_fetch_events_sync, symbol),
-        fetch_sector_pe_average(symbol),
+        fetch_sector_benchmark(symbol),
     )
-    sector_pe_avg, sector_pe_sample, sector_pe_label = sector_pe if sector_pe else (None, 0, None)
+    profile=fundamental_profiles.get_profile(symbol)
+    sector_pe_avg=benchmark.average if benchmark and benchmark.metric=='pe' else None
+    sector_pe_sample=benchmark.sample if sector_pe_avg is not None else 0
+    sector_pe_label=benchmark.label if sector_pe_avg is not None else None
     return FundamentalsBundle(
         valuation=valuation, foreign=foreign, foreign_trend=foreign_trend,
         growth=growth, events=events, sector_pe_avg=sector_pe_avg,
-        sector_pe_sample=sector_pe_sample, sector_pe_label=sector_pe_label,
+        sector_pe_sample=sector_pe_sample, sector_pe_label=sector_pe_label, sector_profile=profile, sector_benchmark=benchmark,
     )
 
 
@@ -614,17 +639,21 @@ def build_fundamentals_prompt_section(
     sector_pe_avg: float | None = None,
     sector_pe_sample: int = 0,
     sector_pe_label: str | None = None,
+    sector_profile: fundamental_profiles.FundamentalProfile | None = None,
+    sector_benchmark: SectorBenchmark | None = None,
 ) -> str:
     if not any([valuation, foreign, foreign_trend, growth, events, sector_pe_avg]):
         return ""
-    lines = [f"[ĐỊNH GIÁ & DÒNG TIỀN THẬT — {symbol}, nguồn công khai VCI/TCBS qua vnstock]"]
+    profile=sector_profile or fundamental_profiles.get_profile(symbol)
+    lines=[f"[ĐỊNH GIÁ & DÒNG TIỀN THẬT — {symbol}, nguồn công khai VCI/TCBS qua vnstock]"]
+    lines.append(f"Chuẩn hóa ngành {profile.label}: ưu tiên {', '.join(profile.priority_metrics)}. {profile.note}".strip())
     if valuation:
         lines.append(
             f"P/E: {_fmt(valuation.pe)} | P/B: {_fmt(valuation.pb)} | "
             f"EPS: {_fmt(valuation.eps)} VND | ROE: {_fmt(valuation.roe, '%')} | "
             f"Tỷ suất cổ tức: {_fmt(valuation.dividend_yield, '%')}"
         )
-        if valuation.debt_equity is not None or valuation.current_ratio is not None:
+        if (valuation.debt_equity is not None or valuation.current_ratio is not None) and not ({'debt_equity','current_ratio'} <= set(profile.suppress_metrics)):
             lines.append(
                 f"Rủi ro tài chính — Nợ/Vốn chủ (D/E): {_fmt(valuation.debt_equity)} | "
                 f"Thanh khoản hiện hành (current ratio): {_fmt(valuation.current_ratio)}"
@@ -635,7 +664,13 @@ def build_fundamentals_prompt_section(
                 f"trong {valuation.pe_history_quarters} quý gần nhất (percentile càng cao = P/E "
                 f"đang càng đắt so với lịch sử của chính mã này, KHÔNG phải so ngành)."
             )
-        if valuation.pe is not None and sector_pe_avg is not None:
+        if sector_benchmark and sector_benchmark.average is not None:
+            current=getattr(valuation,sector_benchmark.metric,None)
+            if current is not None:
+                diff=round((current-sector_benchmark.average)/sector_benchmark.average*100,1) if sector_benchmark.average else None
+                metric="P/B" if sector_benchmark.metric=="pb" else "P/E"; relation=f"; mã {'CAO' if diff>0 else 'THẤP'} hơn {abs(diff)}%" if diff is not None else ""
+                lines.append(f"So ngành {sector_benchmark.label or ''}: {metric} trung bình {sector_benchmark.average} từ {sector_benchmark.sample} mã hợp lệ{relation}.")
+        elif valuation.pe is not None and sector_pe_avg is not None:
             diff_pct = round((valuation.pe - sector_pe_avg) / sector_pe_avg * 100, 1) if sector_pe_avg else None
             cheap_or_expensive = ""
             if diff_pct is not None:

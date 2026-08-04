@@ -80,3 +80,15 @@ def test_it_phien_hon_khuyen_nghi_nhung_tren_san_la_degraded():
     q = val.validate_ohlcv(closes, closes, closes, closes, dates, now=now)
     assert q.status == "degraded"
     assert q.usable is True
+
+
+def test_length_mismatch_fails_closed():
+ q=val.validate_ohlcv([10.0]*30,[11.0]*29,[9.0]*30,[100.0]*30,[])
+ assert q.status=="bad" and q.has_length_mismatch
+def test_nan_and_negative_volume_fail_closed():
+ c=[10.0]*30;c[5]=float("nan");v=[100.0]*30;v[7]=-1
+ q=val.validate_ohlcv(c,[11.0]*30,[9.0]*30,v,[])
+ assert q.status=="bad" and q.has_invalid_numbers
+def test_invalid_ohlc_relationship_fails_closed():
+ q=val.validate_ohlcv([12.0]*30,[11.0]*30,[9.0]*30,[100.0]*30,[])
+ assert q.status=="bad" and q.has_ohlc_violation

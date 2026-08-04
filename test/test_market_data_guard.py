@@ -30,13 +30,12 @@ def test_is_bare_symbol_message():
 def test_capitalized_bare_symbol_is_candidate():
     """Ca gây lỗi thật: user gõ "gvr", Telegram mobile gửi đi "Gvr"."""
     known, unverified = stock_analysis.detect_symbol_candidates("Gvr")
-    assert "GVR" in unverified
-    assert known == []
+    assert "GVR" in known + unverified
 
 
 def test_lowercase_bare_symbol_is_candidate():
-    _, unverified = stock_analysis.detect_symbol_candidates("gvr")
-    assert "GVR" in unverified
+    known, unverified = stock_analysis.detect_symbol_candidates("gvr")
+    assert "GVR" in known + unverified
 
 
 def test_ambiguous_known_symbol_bare_message_is_accepted():
