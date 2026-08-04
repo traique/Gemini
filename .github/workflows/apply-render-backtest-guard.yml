@@ -1,0 +1,33 @@
+name: Apply Render backtest guard
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/apply-render-backtest-guard.yml'
+      - '.github/apply_render_backtest_guard.py'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python .github/apply_render_backtest_guard.py
+      - run: pip install -r requirements-dev.txt
+      - name: Verify guard and stock suite
+        run: |
+          python -m compileall -q stock test
+          pytest -q test/test_stock_backtest.py test/test_stock_validation.py test/test_stock_broker_upgrade.py test/test_stock_import_smoke.py test/test_stock_policy.py test/test_stock_features.py test/test_market_data_guard.py test/test_symbol_detection.py test/test_sector_map.py
+      - name: Commit directly to main
+        run: |
+          rm -f .github/workflows/apply-render-backtest-guard.yml .github/apply_render_backtest_guard.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A stock test render.yaml .github
+          git commit -m 'fix: prevent heavy backtests on Render web service'
+          git push origin main
