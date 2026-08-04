@@ -56,9 +56,7 @@ def _holding(row) -> Holding:
         quantity=float(row["quantity"]),
         average_price=float(row["average_price"]),
         stop_price=float(row["stop_price"]) if row["stop_price"] is not None else None,
-        target_price=(
-            float(row["target_price"]) if row["target_price"] is not None else None
-        ),
+        target_price=(float(row["target_price"]) if row["target_price"] is not None else None),
         note=row["note"] or "",
     )
 
@@ -255,12 +253,7 @@ async def delete_holding(user_id: int, symbol: str) -> bool:
 
 def _fmt_number(value: float, digits: int = 0) -> str:
     if digits:
-        return (
-            f"{value:,.{digits}f}"
-            .replace(",", "_")
-            .replace(".", ",")
-            .replace("_", ".")
-        )
+        return f"{value:,.{digits}f}".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"{value:,.0f}".replace(",", ".")
 
 
@@ -287,11 +280,7 @@ async def build_report(user_id: int, *, digest: bool = False) -> str:
     total_pnl = total_market_value - total_cost if total_market_value else 0.0
     total_pnl_pct = total_pnl / total_cost * 100 if total_cost and total_market_value else 0.0
 
-    title = (
-        "📊 *Digest danh mục đang nắm giữ:*"
-        if digest
-        else "📊 *Danh mục đang nắm giữ:*"
-    )
+    title = "📊 *Digest danh mục đang nắm giữ:*" if digest else "📊 *Danh mục đang nắm giữ:*"
     lines = [title]
     for holding, quote, market_value in priced:
         quantity = _fmt_number(holding.quantity)

@@ -244,9 +244,7 @@ async def maybe_handle_natural_language(user_id: int, text: str) -> str | None:
             user_id,
             symbol,
             stop_price=stop_price if stop_price is not None else current.stop_price,
-            target_price=(
-                target_price if target_price is not None else current.target_price
-            ),
+            target_price=(target_price if target_price is not None else current.target_price),
         )
         return (
             f"✅ Đã cập nhật mức theo dõi {symbol}: "
