@@ -6,7 +6,17 @@ on:
 permissions:
   contents: read
 jobs:
-  python-lint:
+  python-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+  python-format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +27,6 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: ruff check .
       - name: Check formatting of changed Python files
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -26,6 +35,13 @@ jobs:
           if (( ${#files[@]} )); then
             ruff format --check "${files[@]}"
           fi
+  python-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: python -m compileall -q .
   python-test:
     runs-on: ubuntu-latest
