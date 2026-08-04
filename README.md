@@ -1,358 +1,261 @@
-# Gemini Personal Assistant — Telegram + Zalo
+# Gemini Personal Assistant — MVP một người dùng
 
-Trợ lý cá nhân chạy trên **Telegram** và **Zalo**, dùng chung Gemini, trí nhớ, công cụ, phân tích cổ phiếu Việt Nam và Supabase.
+Trợ lý AI cá nhân chạy trên Telegram và tùy chọn Zalo, dùng chung Gemini, trí nhớ dài hạn, công cụ, nhắc việc và phân tích cổ phiếu Việt Nam.
 
-Một deployment phục vụ một chủ sở hữu:
+## Trạng thái MVP
 
-- Telegram được khóa bằng `ALLOWED_USER_ID`.
-- Zalo dùng tài khoản **B** làm bot; tài khoản **A** được ghép đôi làm controller.
-- Python/Uvicorn và Node/zca-js chạy trong **một Docker Web Service** trên Render.
+Repository được thiết kế cho **một chủ sở hữu**:
+
+- Telegram chỉ chấp nhận `ALLOWED_USER_ID`.
+- Zalo ghép đôi một tài khoản controller với tài khoản bot riêng.
+- Telegram và Zalo dùng chung memory, tools và stock pipeline.
+- Cookie và session nhạy cảm được mã hóa trước khi lưu database.
+- Webhook và background tasks được drain khi shutdown.
+- Backtest nặng bị chặn trên Render Web Service.
+- Python và TypeScript có lint, format, test và CI.
+
+Đây không phải hệ thống multi-tenant, nền tảng tư vấn tài chính được cấp phép hoặc broker đặt lệnh.
 
 ## Tính năng
 
-### Dùng chung cho Telegram và Zalo
+### Trợ lý chung
 
-- Chat Gemini đa lĩnh vực với persona trong `chat_skill.yaml`.
-- Provider-chain: cookie Gemini → AI Studio key 1 → key 2.
-- Tra giá và phân tích cổ phiếu Việt Nam.
-- Trí nhớ theo phiên và trí nhớ dài hạn trong Supabase.
-- Ghi chú, nhắc việc và danh mục qua ngôn ngữ tự nhiên.
-- `/gia`, `/prompt`, `/reset`, `/history`, `/memory`, `/forget`, `/notes`, `/model`, `/status`, `/usecookie`.
-- Ảnh → prompt bằng Gemini Vision.
+- Provider chain: Gemini cookie → AI Studio key 1 → key 2.
+- Tự cooldown API hết quota và probe lại cookie.
+- Lịch sử theo phiên và trí nhớ dài hạn trên Supabase Postgres.
+- Ghi chú, reminder và facts danh mục qua ngôn ngữ tự nhiên.
+- Tìm giá sản phẩm bằng grounded search chính thức.
+- Phân tích ảnh và tạo prompt.
 
-### Riêng cho Zalo
+### Telegram
 
-- Đăng nhập tài khoản B bằng QR gửi trong Telegram qua `/zalo`.
-- Ghép đôi tài khoản A bằng mã dùng một lần, không cần tìm Zalo UID thủ công.
-- Theo dõi động các nhóm mà B đang tham gia.
-- Chỉ lưu text từ nhóm được bật; B không tự phản hồi trong nhóm.
-- Tổng kết theo yêu cầu hoặc tự động lúc 09:00 `Asia/Ho_Chi_Minh`.
-- Session B, controller A, tin nhắn nhóm, summary và outbox được lưu trong Supabase.
-- Ảnh riêng A → B được tải từ CDN Zalo bằng session của B, giới hạn 8 MB và xóa file tạm sau xử lý.
+- Long polling khi chạy local; webhook khi deploy Render.
+- Khóa truy cập theo một Telegram user ID.
+- Xử lý text dài, ảnh và image document.
+- Lệnh quản lý memory, provider, model và Zalo.
+
+### Zalo
+
+- Gateway `zca-js` tùy chọn chạy cạnh Python service.
+- Đăng nhập tài khoản bot bằng QR từ Telegram.
+- Ghép đôi controller bằng mã dùng một lần.
+- Chat riêng controller → bot và gửi ảnh.
+- Thu thập text từ nhóm allowlist, tạo summary và gửi qua durable outbox.
+- Tổng kết hằng ngày theo `Asia/Ho_Chi_Minh`.
+
+### Phân tích cổ phiếu Việt Nam
+
+`stock/` tách rõ data, validation, features, policy và presentation:
+
+```text
+DNSE ──┐
+       ├─ OHLCV contract ─ features ─ deterministic policy ─ report
+VCI ───┘                         │
+                         VNINDEX / ngành / cơ bản / tin tức
+```
+
+Năng lực hiện tại:
+
+- DNSE OHLCV với failover tự động sang `vnstock`/VCI.
+- Strict contract cho độ dài mảng, số hữu hạn, quan hệ OHLC và ngày giao dịch.
+- RSI, MACD, MA/EMA, Bollinger, ADX, ATR, Donchian, thanh khoản, distribution days và key levels.
+- Gate theo market regime, data quality, setup và risk/reward.
+- `BUY`, `HOLD`, `WATCH`, `SELL`, `NO_TRADE` do code quyết định; LLM chỉ diễn giải.
+- Vùng mua, stop, target, R:R, position sizing và kịch bản bull/base/bear.
+- Fundamental theo ngành: ưu tiên P/B cho ngân hàng, chứng khoán, bảo hiểm và bất động sản; P/E ở nhóm phù hợp.
+- Walk-forward backtest có phí, thuế bán, slippage, T+, và 30% out-of-sample.
+
+Bot không kết nối tài khoản chứng khoán và không đặt lệnh.
 
 ## Kiến trúc
 
 ```text
-Telegram ── webhook ──┐
-                      ├─ FastAPI / shared services ── Gemini provider-chain
-Zalo A ── chat ── B ──┘             │
-          zca-js                     ├─ stock pipeline
-                                     ├─ memory/tools
-10 nhóm Zalo ── B listener ──────────└─ Supabase
+Telegram webhook ─┐
+                  ├─ FastAPI / shared services ─ Gemini provider chain
+Zalo gateway ─────┘              │
+                                 ├─ memory và tools
+                                 ├─ stock research
+                                 └─ Supabase Postgres
 
 Render Docker service
-├── Uvicorn: Telegram, bridge, scheduler, Gemini
-└── Node.js: zca-js listener và local control server
+├── Uvicorn: webhook, bridge, scheduler và assistant
+└── Node.js: Zalo listener và loopback control server
 ```
 
-Control server Zalo chỉ bind tại `127.0.0.1:9901`; Render không công khai port này.
-
-## Cảnh báo
-
-- `gemini-webapi` và `zca-js` đều là thư viện không chính thức. Tài khoản Google/Zalo có thể bị giới hạn hoặc khóa.
-- `GEMINI_SECURE_1PSID` là session token nhạy cảm. Không commit, không log, không gửi cho người khác.
-- Chỉ chạy **một listener** cho tài khoản B. Mở Zalo Web bằng B có thể làm listener trên Render bị ngắt.
-- Luôn cấu hình `SETTINGS_ENC_KEY` hợp lệ để mã hóa session trước khi lưu Supabase.
-- Dự án thiết kế cho một người dùng, không phải hệ thống multi-tenant.
+Zalo control server chỉ bind `127.0.0.1:9901`.
 
 ## Yêu cầu
 
-- Python 3.12.
-- Node.js 18 trở lên.
-- Telegram Bot Token.
-- Supabase Postgres, dùng connection string **Session pooler**.
-- Cookie Gemini hoặc ít nhất một Google AI Studio API key.
-- Một tài khoản Zalo B riêng nếu bật kênh Zalo.
+- Python 3.12
+- Node.js 18+
+- Telegram bot token
+- Supabase Postgres Session Pooler URL
+- Gemini cookie session
+- Fernet encryption key
+- Tùy chọn: Google AI Studio keys và tài khoản Zalo bot riêng
 
 ## Cấu hình bắt buộc
 
-| Biến | Mô tả |
+| Biến | Mục đích |
 |---|---|
 | `TELEGRAM_TOKEN` | Token từ BotFather |
-| `ALLOWED_USER_ID` | Telegram user ID duy nhất được phép dùng bot |
-| `DATABASE_URL` | Supabase Session pooler URL |
-| `WEBHOOK_SECRET` | Secret bảo vệ Telegram webhook trên Render |
-| `GEMINI_SECURE_1PSID` | Cookie Gemini; code hiện tại vẫn yêu cầu biến này |
-| `GEMINI_SECURE_1PSIDTS` | Cookie phụ của Gemini |
-| `SETTINGS_ENC_KEY` | Fernet key mã hóa cookie và session Zalo |
+| `ALLOWED_USER_ID` | Telegram user duy nhất được phép dùng bot |
+| `GEMINI_SECURE_1PSID` | Credential của Gemini cookie session |
+| `DATABASE_URL` | Supabase Session Pooler URL |
+| `SETTINGS_ENC_KEY` | Fernet key mã hóa settings nhạy cảm |
+| `WEBHOOK_SECRET` | Secret cho Telegram webhook trên Render |
+| `WEBHOOK_BASE_URL` | Public base URL; Render có thể cung cấp `RENDER_EXTERNAL_URL` |
 
 Tạo secret:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-Tạo Fernet key:
-
-```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Fernet key thường dài 44 ký tự và có thể kết thúc bằng `=`. Dán nguyên chuỗi, không thêm dấu nháy hoặc tiền tố tên biến.
+`SETTINGS_ENC_KEY` là bắt buộc và fail closed. Không đổi hoặc làm mất key sau khi đã lưu ciphertext.
 
-## Biến Gemini và Telegram
-
-| Biến | Mặc định | Mô tả |
-|---|---:|---|
-| `GOOGLE_AI_STUDIO_API_KEY_1` | trống | API fallback thứ nhất |
-| `GOOGLE_AI_STUDIO_API_KEY_2` | trống | API fallback thứ hai |
-| `GOOGLE_AI_STUDIO_MODEL` | `gemini-2.5-flash` | Model nhánh API |
-| `PROVIDER_ORDER` | `cookie,api1,api2` | Thứ tự provider |
-| `CHAT_HISTORY_TURNS` | `8` | Lượt chat gần nhất nạp lại |
-| `CHAT_SESSION_TIMEOUT_SEC` | `21600` | Timeout phiên chat |
-| `COOKIE_PROBE_INTERVAL_SEC` | `900` | Chu kỳ thử lại cookie |
-| `API_QUOTA_COOLDOWN_SEC` | `3600` | Cooldown API hết quota |
-| `MEDIA_DIR` | `media` | Thư mục file tạm |
-
-Xem toàn bộ cấu hình trong `.env.example` và `render.yaml`.
-
-## Biến Zalo
-
-| Biến | Mặc định | Mô tả |
-|---|---:|---|
-| `ZALO_ENABLED` | `false` | Bật Node gateway |
-| `ZALO_BRIDGE_SECRET` | — | Secret giữa Node và Python |
-| `ZALO_CONTROL_PORT` | `9901` | Port loopback, không public |
-| `ZALO_BOT_ACCOUNT_ID` | `zalo-bot` | ID logic trước khi B đăng nhập |
-| `ZALO_CONTROLLER_ID` | trống | Có thể để trống; `/pair` tự lưu UID A |
-| `ZALO_GROUP_REFRESH_MS` | `60000` | Chu kỳ tải allowlist nhóm |
-| `ZALO_OUTBOX_POLL_MS` | `15000` | Chu kỳ gửi outbox B → A |
-| `ZALO_GROUP_RETENTION_DAYS` | `30` | Số ngày giữ tin nhắn nhóm |
-| `ZALO_DAILY_SUMMARY_HOUR` | `9` | Giờ tổng kết tại Việt Nam |
-| `ZALO_IMAGE_MAX_BYTES` | `8388608` | Giới hạn ảnh A → B |
-
-`ZALO_COOKIE_JSON`, `ZALO_IMEI` và `ZALO_USER_AGENT` chỉ là fallback. Nếu dùng QR Telegram, có thể để trống.
-
-## Deploy lên Render
-
-### 1. Tạo Supabase
-
-1. Tạo project tại Supabase.
-2. Vào **Project Settings → Database → Connect**.
-3. Chọn **Session pooler**, không dùng Direct connection IPv6-only.
-4. Điền URL vào `DATABASE_URL`.
-
-Ứng dụng tự tạo schema khi khởi động, gồm memory, settings, nhóm Zalo, tin nhắn nhóm, summaries và outbox.
-
-### 2. Tạo Telegram bot
-
-1. Tạo bot với `@BotFather` và lấy `TELEGRAM_TOKEN`.
-2. Lấy Telegram ID bằng `@userinfobot` và điền `ALLOWED_USER_ID`.
-
-### 3. Deploy Blueprint
-
-1. Render Dashboard → **New → Blueprint**.
-2. Chọn repository; Render đọc `render.yaml` và build `Dockerfile`.
-3. Điền các secret bắt buộc.
-4. Để `ZALO_ENABLED=false` ở lần deploy đầu.
-5. Xác nhận `/` trả `200 OK` và Telegram hoạt động.
-
-### 4. Bật và đăng nhập Zalo B
-
-Trong Render Environment:
-
-```env
-ZALO_ENABLED=true
-ZALO_BRIDGE_SECRET=<secret-ngẫu-nhiên>
-ZALO_CONTROLLER_ID=
-```
-
-Save và redeploy. Trong Telegram riêng với bot:
-
-```text
-/zalo
-```
-
-1. Bot gửi QR.
-2. Dùng B quét QR và **bấm xác nhận đăng nhập trên điện thoại**.
-3. Gửi lại `/zalo`; bot trả mã ghép đôi 6 chữ số.
-4. Từ A nhắn riêng B:
-
-```text
-/pair 123456
-```
-
-Mã hết hạn sau 5 phút và chỉ dùng một lần. UID của A được mã hóa rồi lưu Supabase.
-
-Đăng xuất và xóa session/controller:
-
-```text
-/zalologout
-```
-
-## Sử dụng Telegram
-
-| Lệnh | Chức năng |
-|---|---|
-| `/zalo` | Đăng nhập hoặc xem trạng thái B; tạo mã ghép đôi A |
-| `/zalologout` | Đăng xuất B và xóa liên kết A |
-| `/prompt <mô tả>` | Viết prompt tạo ảnh |
-| `/gia <sản phẩm>` | Tìm và so sánh giá |
-| `/reset` | Xóa ngữ cảnh phiên |
-| `/history` | Xem lịch sử gần nhất |
-| `/memory` | Xem trí nhớ dài hạn |
-| `/forget` | Xóa trí nhớ dài hạn |
-| `/notes` | Xem ghi chú |
-| `/model [tên|auto]` | Xem/đổi model cookie |
-| `/status` | Kiểm tra provider-chain |
-| `/usecookie` | Thử lại cookie ngay |
-
-Gửi ảnh trực tiếp cho Telegram bot để tạo prompt từ ảnh.
-
-## Sử dụng Zalo A → B
-
-Sau khi ghép đôi, A có thể chat tự nhiên, hỏi cổ phiếu và dùng:
-
-```text
-/help
-/prompt <mô tả>
-/gia <sản phẩm>
-/reset
-/history
-/memory
-/forget
-/notes
-/model <tên|auto>
-/status
-/usecookie
-```
-
-### Ảnh → prompt
-
-Gửi trực tiếp ảnh JPEG, PNG hoặc WebP trong chat riêng A → B. Có thể thêm caption:
-
-```text
-mặt tôi
-giữ mặt
-cô gái 20
-```
-
-B tải ảnh bằng session Zalo, gửi binary qua bridge nội bộ, gọi Gemini Vision và xóa file tạm trong `finally`. Ảnh nhóm không được xử lý.
-
-### Quản lý nhóm
-
-Từ A nhắn B:
-
-```text
-/nhomzalo
-```
-
-Lấy `group_id`, sau đó thêm nhóm:
-
-```text
-/themnhom <group_id> <alias>
-```
-
-Ví dụ:
-
-```text
-/themnhom 1234567890123456789 chung-khoan
-```
-
-Các lệnh còn lại:
-
-```text
-/nhom
-/xoanhom <group_id hoặc alias>
-/tongket <alias> 24h
-/tongket <alias> 7d
-/tongket <alias> homnay
-/tongket <alias> homqua
-/tongket all 24h
-```
-
-Gateway chỉ thu thập **tin nhắn text mới sau khi nhóm được thêm**. Không backfill lịch sử, không lưu media nhóm và không phản hồi trong nhóm.
-
-Xóa nhóm sẽ ngừng theo dõi và xóa dữ liệu liên quan qua cascade.
-
-### Tổng kết 09:00
-
-Scheduler chạy theo `Asia/Ho_Chi_Minh`, tổng kết từng nhóm trong cửa sổ:
-
-```text
-09:00 hôm trước → 09:00 hôm nay
-```
-
-Summary được đưa vào outbox; B gửi riêng cho A. Unique key theo nhóm/cửa sổ giúp hạn chế gửi trùng khi Render restart.
-
-## Dữ liệu Supabase
-
-Các bảng Zalo được tạo lazy-init:
-
-```text
-zalo_groups
-zalo_group_messages
-zalo_group_summaries
-zalo_outbox
-```
-
-Session B và controller A được mã hóa rồi lưu trong bảng `settings`. Tin nhắn nhóm được dọn theo `ZALO_GROUP_RETENTION_DAYS`.
+Xem `.env.example` và `render.yaml` để biết toàn bộ biến tùy chọn.
 
 ## Chạy local
-
-Telegram long polling:
 
 ```bash
 git clone https://github.com/traique/Gemini.git
 cd Gemini
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 python main.py
 ```
 
-Docker giống Render:
+Docker:
 
 ```bash
 docker build -t gemini-assistant .
 docker run --env-file .env -p 10000:10000 gemini-assistant
 ```
 
-## Kiểm thử
+## Deploy Render
+
+1. Tạo Supabase và lấy **Session Pooler** connection string.
+2. Tạo Telegram bot và lấy Telegram user ID của chủ sở hữu.
+3. Tạo Render Blueprint từ repository.
+4. Điền secret trong `render.yaml`.
+5. Deploy lần đầu với `ZALO_ENABLED=false`.
+6. Kiểm tra `/` trả `200` và Telegram hoạt động.
+7. Chỉ bật Zalo sau khi webhook ổn định.
+
+Render đặt cứng:
+
+```env
+STOCK_BACKTEST_ALLOW_ON_RENDER=false
+```
+
+Nếu code vô tình gọi backtest trên Render, tác vụ dừng trước khi tải dữ liệu hoặc dùng CPU đáng kể. Hãy tạo `stock/data/backtest_stats.json` bằng job CI/offline riêng rồi deploy file kết quả.
+
+## Thiết lập Zalo
+
+Đặt `ZALO_ENABLED=true`, cấu hình `ZALO_BRIDGE_SECRET` và redeploy. Trong Telegram gửi:
+
+```text
+/zalo
+```
+
+Quét QR bằng tài khoản Zalo bot và xác nhận trên điện thoại. Gửi `/zalo` lần nữa để nhận mã pairing, sau đó từ tài khoản controller nhắn bot:
+
+```text
+/pair 123456
+```
+
+Dùng `/zalologout` trên Telegram để xóa session và controller đã lưu.
+
+Lệnh quản lý nhóm từ controller:
+
+```text
+/nhomzalo
+/themnhom <group_id> <alias>
+/nhom
+/xoanhom <group_id-or-alias>
+/tongket <alias|all> <24h|7d|homnay|homqua>
+```
+
+Gateway chỉ lưu text mới từ nhóm allowlist, không backfill, không lưu media nhóm và không trả lời trong nhóm.
+
+## Lệnh chính
+
+| Lệnh | Chức năng |
+|---|---|
+| `/help` | Hướng dẫn |
+| `/zalo` | Đăng nhập hoặc xem trạng thái Zalo |
+| `/zalologout` | Xóa Zalo session |
+| `/prompt` | Tạo prompt hình ảnh |
+| `/gia` | Tìm giá sản phẩm |
+| `/reset` | Reset conversation context |
+| `/history` | Xem lịch sử gần nhất |
+| `/memory` | Xem trí nhớ dài hạn |
+| `/forget` | Xóa trí nhớ dài hạn |
+| `/notes` | Xem ghi chú |
+| `/model` | Xem hoặc đổi cookie model |
+| `/status` | Xem provider chain |
+| `/usecookie` | Thử lại cookie provider |
+
+## Kiểm tra chất lượng
 
 ```bash
-pip install -r requirements.txt -r requirements-dev.txt
-pytest test/ -v
+pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
+python -m compileall -q .
+pytest -q
 
 cd zalo-gateway
 npm install
 npm run check
 ```
 
-Repository hiện chưa có CI bắt buộc; nên chạy cả Python test và TypeScript check trước khi merge.
+CI chạy các kiểm tra Python và TypeScript trên push và pull request.
 
-## Xử lý lỗi thường gặp
+## Cấu trúc repository
 
-| Triệu chứng | Cách xử lý |
-|---|---|
-| `Network is unreachable` với Supabase | Đổi từ Direct connection sang Session pooler |
-| `SETTINGS_ENC_KEY ... Incorrect padding` | Tạo Fernet key mới, dán nguyên 44 ký tự và giữ dấu `=` cuối |
-| `[zalo] gateway disabled` | Đặt `ZALO_ENABLED=true` rồi redeploy |
-| `ECONNREFUSED 127.0.0.1:10000` lúc startup | Node sẽ retry trong lúc chờ Uvicorn; chỉ đáng lo nếu lặp liên tục |
-| `/zalo` gửi lại QR sau khi quét | Bấm xác nhận đăng nhập trên điện thoại B; dùng bản mới nhất |
-| B không phản hồi A | Kiểm tra `/zalo` đã báo kết nối và ghép đôi; không mở Zalo Web bằng B |
-| `/nhomzalo` không có nhóm | B chưa tham gia nhóm hoặc listener mất kết nối |
-| Tổng kết trống | Chỉ tin nhắn text phát sinh sau `/themnhom` mới được lưu |
-| Ảnh Zalo không tải được | Kiểm tra hostname/HTTP/MIME trong lỗi đã được làm sạch; ảnh phải ≤8 MB và là JPEG/PNG/WebP |
-| TypeScript lỗi export `zca-js` | Đảm bảo đang deploy commit mới có `zca-js-compat.d.ts` |
-| Telegram webhook hoạt động nhưng Zalo không chạy | Kiểm tra log Supervisor và biến `ZALO_ENABLED` |
+```text
+ai/                 Gemini clients và provider routing
+channels/           Channel contracts và Zalo persistence
+core/               Config, encryption và database
+handlers/           Telegram handlers
+services/           Chat, commands, memory và telemetry dùng chung
+stock/              Market data, validation, policy và backtest
+zalo-gateway/        Node.js Zalo listener
+web.py               FastAPI webhook entrypoint
+main.py              Local long-polling entrypoint
+bot_app.py           Telegram app factory và lifecycle
+```
 
 ## Bảo mật vận hành
 
-- Không commit `.env`, cookie, QR, `zalo-session.json` hoặc file media.
-- Không log URL CDN Zalo đầy đủ vì URL có thể chứa token.
+- Không commit `.env`, Gemini cookie, Zalo session, QR hoặc media.
+- Không log credential hoặc signed Zalo CDN URL đầy đủ.
 - Không public port `9901`.
-- Dùng secret khác nhau cho webhook, diagnose và Zalo bridge.
-- Không đổi/mất `SETTINGS_ENC_KEY` sau khi đã lưu ciphertext.
-- Nếu nghi session lộ, dùng `/zalologout`, đổi secret và đăng nhập QR lại.
+- Dùng secret riêng cho webhook, diagnostics và Zalo bridge.
+- Giữ `SETTINGS_ENC_KEY` ổn định và backup an toàn.
+- Chỉ chạy một Zalo listener cho tài khoản bot.
+- Rotate session ngay nếu nghi ngờ bị lộ.
 
-## Tài liệu thêm
+## Giới hạn đã biết
 
-- `docs/zalo-render.md` — rollout/rollback Zalo trên Render.
-- `zalo-gateway/README.md` — chi tiết gateway Node.
-- `.env.example` và `render.yaml` — danh sách biến môi trường.
+- `gemini-webapi`, `zca-js`, DNSE và `vnstock` là dependency không chính thức hoặc không có SLA.
+- Stock module là research assistant, không phải broker hoặc tư vấn viên được cấp phép.
+- Backtest phụ thuộc độ phủ provider và không bảo đảm hiệu suất tương lai.
+- Dự án cố ý chỉ hỗ trợ một người dùng; không có tenant isolation, billing, roles hoặc horizontal scaling.
+- Render Free có thể sleep; keep-alive workflow cần repository variable `RENDER_APP_URL`.
 
-## License và trách nhiệm
+## Tài liệu bổ sung
 
-Dùng cho mục đích cá nhân/nội bộ. Người vận hành tự chịu trách nhiệm về điều khoản sử dụng của Google, Telegram, Zalo và các nguồn dữ liệu thị trường.
+- `docs/zalo-render.md`
+- `zalo-gateway/README.md`
+- `.env.example`
+- `render.yaml`
+
+## Trách nhiệm
+
+Dùng cho mục đích cá nhân/nội bộ. Người vận hành chịu trách nhiệm về điều khoản của Google, Telegram, Zalo, nguồn dữ liệu thị trường và mọi quyết định đầu tư.
