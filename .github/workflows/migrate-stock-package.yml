@@ -1,0 +1,27 @@
+name: Migrate stock package
+on:
+  push:
+    paths:
+      - scripts/migrate_stock_package.py
+      - .github/workflows/migrate-stock-package.yml
+permissions:
+  contents: write
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Move implementation and rewrite imports
+        run: python scripts/migrate_stock_package.py
+      - name: Compile all Python sources
+        run: python -m compileall -q .
+      - name: Commit migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "refactor: move stock subsystem into package"
+          git push
