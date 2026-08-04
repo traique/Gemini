@@ -1,4 +1,5 @@
 """Supabase persistence for dynamically managed Zalo groups and summaries."""
+
 import asyncio
 import os
 from datetime import datetime
@@ -156,5 +157,5 @@ async def cleanup_old_messages(account_id: str) -> None:
     await ensure_schema()
     await (await db.get_pool()).execute("""
         DELETE FROM zalo_group_messages WHERE account_id=$1
-        AND sent_at < now() - ($2::text || ' days')::interval
+        AND sent_at < now() - ($2::integer * INTERVAL '1 day')
     """, account_id, _retention_days())
