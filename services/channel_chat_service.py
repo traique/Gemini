@@ -1,4 +1,5 @@
 """Telegram-independent text, command and stock chat service."""
+
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -6,10 +7,10 @@ from dataclasses import dataclass
 import messages
 from ai import orchestrator
 from core import database as db
-from services import memory_service, tools
+from services import memory_service, portfolio_service, tools
+from services.background_tasks import stop_tracked_tasks
 from services.channel_command_service import maybe_handle_command
 from services.telemetry import telemetry
-from services.background_tasks import stop_tracked_tasks
 from stock import analysis as stock_analysis
 
 logger = logging.getLogger(__name__)
@@ -79,9 +80,9 @@ async def _handle_stock(user_id: int, text: str) -> tuple[ChannelResult | None, 
         return None, ""
     if stock_analysis.wants_portfolio_analysis(text, symbols):
         try:
-            return ChannelResult([
-                await stock_analysis.analyze_portfolio(symbols, text, user_id=user_id)
-            ]), ""
+            return ChannelResult(
+                [await stock_analysis.analyze_portfolio(symbols, text, user_id=user_id)]
+            ), ""
         except Exception:
             logger.exception("Channel portfolio analysis failed")
             return ChannelResult(["❌ Có lỗi khi soi danh mục."]), ""
@@ -101,12 +102,14 @@ async def _handle_stock(user_id: int, text: str) -> tuple[ChannelResult | None, 
             *(stock_analysis.quick_quote(symbol) for symbol in symbols),
             return_exceptions=True,
         )
-        return ChannelResult([
-            messages.STOCK_QUOTE_FAILED.format(symbol=symbol)
-            if isinstance(result, BaseException)
-            else result
-            for symbol, result in zip(symbols, results)
-        ]), ""
+        return ChannelResult(
+            [
+                messages.STOCK_QUOTE_FAILED.format(symbol=symbol)
+                if isinstance(result, BaseException)
+                else result
+                for symbol, result in zip(symbols, results)
+            ]
+        ), ""
     return None, await stock_analysis.build_price_grounding(symbols)
 
 
@@ -114,10 +117,18 @@ async def handle_channel_text(user_id: int, text: str) -> ChannelResult:
     text = (text or "").strip()
     if not text:
         return ChannelResult([])
+
+    portfolio_command = await portfolio_service.handle_command(user_id, text)
+    if portfolio_command is not None:
+        return ChannelResult([portfolio_command])
     command_result = await maybe_handle_command(user_id, text)
     if command_result is not None:
         outputs, provider = command_result
         return ChannelResult(outputs, provider)
+    portfolio_result = await portfolio_service.maybe_handle_natural_language(user_id, text)
+    if portfolio_result is not None:
+        return ChannelResult([portfolio_result])
+
     stock_result, grounding = await _handle_stock(user_id, text)
     if stock_result is not None:
         return stock_result

@@ -1,4 +1,5 @@
 """Điểm vào cho mọi tin nhắn văn bản thường (không phải lệnh /)."""
+
 import asyncio
 import logging
 
@@ -9,7 +10,7 @@ import messages
 from ai import orchestrator
 from core import database as db
 from handlers import common, stock_handler
-from services import memory_service, tools
+from services import memory_service, portfolio_service, tools
 from services.background_tasks import stop_tracked_tasks
 from services.telemetry import telemetry
 from stock import analysis as stock_analysis
@@ -50,6 +51,11 @@ async def chat_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     user_id = update.effective_user.id
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    portfolio_result = await portfolio_service.maybe_handle_natural_language(user_id, text)
+    if portfolio_result is not None:
+        await common.reply_long_text(update.message, portfolio_result)
+        return
 
     route = await stock_handler.maybe_handle(update, user_id, text)
     if route.handled:

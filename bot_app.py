@@ -11,9 +11,10 @@ import scheduler
 import tg_format
 from ai import orchestrator
 from core import config, database as db, idempotency
-from handlers import chat_router, commands, media_handler, zalo_login
+from handlers import chat_router, commands, media_handler, portfolio_commands, zalo_login
 from services import channel_chat_service
 from services.background_tasks import stop_tracked_tasks
+from stock import portfolio
 from stock import providers as stock_providers
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 COMMANDS = [
     BotCommand("start", "Bắt đầu"),
     BotCommand("help", "Xem hướng dẫn"),
+    BotCommand("danhmuc", "Xem danh mục cổ phiếu"),
+    BotCommand("themcp", "Thêm giao dịch mua"),
+    BotCommand("capnhatcp", "Cập nhật vị thế"),
+    BotCommand("bancp", "Bán bớt hoặc bán hết"),
+    BotCommand("xoacp", "Xóa mã khỏi danh mục"),
     BotCommand("zalo", "Đăng nhập hoặc xem trạng thái Zalo B"),
     BotCommand("zalologout", "Đăng xuất Zalo B"),
     BotCommand("prompt", "Viết prompt tạo ảnh"),
@@ -39,6 +45,7 @@ COMMANDS = [
 async def _post_init(app):
     await db.init_db()
     await idempotency.ensure_schema()
+    await portfolio.ensure_schema()
     await app.bot.set_my_commands(COMMANDS)
     await orchestrator.init_provider_state()
     orchestrator.start_background_tasks()
@@ -99,6 +106,11 @@ def build_application():
     command_handlers = [
         ("start", commands.start_cmd),
         ("help", commands.help_cmd),
+        ("danhmuc", portfolio_commands.portfolio_cmd),
+        ("themcp", portfolio_commands.portfolio_cmd),
+        ("capnhatcp", portfolio_commands.portfolio_cmd),
+        ("bancp", portfolio_commands.portfolio_cmd),
+        ("xoacp", portfolio_commands.portfolio_cmd),
         ("zalo", zalo_login.zalo_cmd),
         ("zalologout", zalo_login.zalologout_cmd),
         ("prompt", commands.prompt_cmd),
