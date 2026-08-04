@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import stock_features as feat  # noqa: E402
-import stock_policy as pol  # noqa: E402
-from stock_validation import DataQuality  # noqa: E402
+from stock import features as feat  # noqa: E402
+from stock import policy as pol  # noqa: E402
+from stock.validation import DataQuality  # noqa: E402
 
 
 def _ok_quality(n=60):

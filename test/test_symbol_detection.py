@@ -7,7 +7,7 @@ thật và bị trả lời bằng số bịa.
 Xem thêm test/test_market_data_guard.py cho vòng sửa thứ hai (tin nhắn trơ
 trọi dạng mã, nhãn realtime ngoài giờ, dữ liệu thị trường ngoài sàn VN).
 """
-import stock_analysis
+from stock import analysis as stock_analysis
 
 
 def test_lowercase_symbol_with_price_keyword_is_candidate():

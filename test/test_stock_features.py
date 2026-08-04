@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import stock_features as ind  # noqa: E402
+from stock import features as ind  # noqa: E402
 
 
 # ─── RSI (Wilder) ────────────────────────────────────────────────────────────

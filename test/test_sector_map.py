@@ -6,8 +6,8 @@ nhận diện mã, nên bắt bằng test thay vì bằng mắt.
 """
 import re
 
-import stock_analysis
-import stock_sector
+from stock import analysis as stock_analysis
+from stock import sector as stock_sector
 
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,4}$")
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import stock_backtest as bt  # noqa: E402
+from stock import backtest as bt  # noqa: E402
 
 
 def _uptrend_series(n=200, start=30_000.0, step=150.0):

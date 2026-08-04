@@ -9,8 +9,8 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import stock_analysis
-import stock_providers as providers
+from stock import analysis as stock_analysis
+from stock import providers
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 

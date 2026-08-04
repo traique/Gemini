@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import stock_validation as val  # noqa: E402
+from stock import validation as val  # noqa: E402
 
 
 def _dates(n: int, end: datetime) -> list[str]:

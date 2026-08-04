@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import stock_analysis
+from stock import analysis as stock_analysis
 from core import database as db
 from ai import official_client
 
