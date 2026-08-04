@@ -65,7 +65,6 @@ _ALL_MODES = (_render_described, _render_girl, _render_reference)
 
 
 # ─── Template chung ─────────────────────────────────
-
 def test_ca_3_dang_deu_format_duoc_khong_thieu_placeholder():
     for render in _ALL_MODES:
         text = render()
@@ -83,21 +82,18 @@ def test_khong_con_co_phap_cua_tool_khac():
     """--ar 4:5 là cú pháp Midjourney, dán vào Gemini chỉ là rác chữ."""
     for render in _ALL_MODES:
         text = render()
-        # Chỉ được xuất hiện trong rule cấm, không được nằm trong ví dụ
         example = text.split("---")[1]
         assert "--ar" not in example
     assert "DO NOT append any tool-specific flags" in _render_described()
 
 
 def test_vi_du_da_trung_tinh_khong_con_canh_mua_dem():
-    """Ví dụ cũ là cảnh mưa đêm áo ướt, rỉ sang mọi kết quả."""
     example = _render_described().split("---")[1]
     for leak in ("at night", "drenched", "heavy rain", "wet asphalt", "low-light noise"):
         assert leak not in example, f"ví dụ còn rỉ chi tiết: {leak}"
 
 
-# ─── Khung hình: lỗi nặng nhất khiến Gemini đẻ ảnh ngang, người bé tí ───
-
+# ─── Khung hình ─────────────────────────────────────
 def test_bat_buoc_ta_khung_hinh():
     for render in _ALL_MODES:
         text = render()
@@ -113,15 +109,13 @@ def test_bat_buoc_ta_khung_hinh():
 
 
 def test_vi_du_co_san_cau_ta_khung_hinh():
-    """Model bắt chước ví dụ, nên ví dụ phải có sẵn câu khung hình."""
     example = _render_described().split("---")[1]
     assert "Vertical 9:16 portrait orientation" in example
     assert "three-quarter body shot" in example
     assert "chest height" in example
 
 
-# ─── Dáng người: "arms outstretched" bị hiểu thành động tác nhún vai ─────
-
+# ─── Dáng người ─────────────────────────────────────
 def test_bat_buoc_ta_dang_nguoi_chi_tiet():
     for render in _ALL_MODES:
         text = render()
@@ -137,8 +131,7 @@ def test_vi_du_co_doan_ta_dang_nguoi():
     assert "palms turned inwards" in example
 
 
-# ─── Chất ảnh: không được ép da thô khi ảnh gốc bóng bẩy ────────────
-
+# ─── Chất ảnh ───────────────────────────────────────
 def test_chat_anh_bam_theo_anh_goc():
     for render in _ALL_MODES:
         text = render()
@@ -148,14 +141,12 @@ def test_chat_anh_bam_theo_anh_goc():
 
 
 def test_khong_con_ep_cung_visible_pores():
-    """Rule cũ luôn ép "visible pores / zero airbrushing" dù ảnh gốc bóng bẩy."""
     for render in _ALL_MODES:
         text = render()
         assert "MANDATORY WORDS" not in text
 
 
-# ─── Ống kính: 35mm là góc rộng, đẩy chủ thể ra xa và nhỏ lại ─────────
-
+# ─── Ống kính ───────────────────────────────────────
 def test_ong_kinh_suy_tu_anh_goc():
     for render in _ALL_MODES:
         text = render()
@@ -169,17 +160,14 @@ def test_canh_bao_khong_chep_ong_kinh_cua_vi_du():
     assert "the 48mm lens" in text
 
 
-# ─── Dạng 1: không caption ───────────────────────────────
-
+# ─── Dạng 1: không caption ──────────────────────────
 def test_dang_1_khong_co_dong_identity_lock():
-    text = _render_described()
-    assert "[Identity Lock" not in text
-    assert "[IDENTITY LOCK" not in text
+    lines = _render_described().splitlines()
+    assert not any(line.startswith("[Identity Lock") for line in lines)
+    assert not any(line.startswith("[IDENTITY LOCK") for line in lines)
 
 
 def test_dang_1_khong_tro_toi_anh_trong_vi_du():
-    """Prompt dạng này dán dưới dạng chữ thuần tuý, không đính kèm ảnh, nên
-    câu "subject from the reference image" trong VÍ DỤ là câu rỗng."""
     text = _render_described()
     assert "Raw, candid smartphone photo of a woman in her early 20s" in text
     assert "photo of the subject from" not in text
@@ -200,14 +188,12 @@ def test_dang_1_vi_du_chu_the_co_san_mo_ta_mat():
         assert feature in phrase
 
 
-# ─── Dạng 2: cô gái 20 ────────────────────────────────
-
+# ─── Dạng 2: cô gái 20 ──────────────────────────────
 def test_dang_2_giu_nguyen_khoi_lock_co_dinh():
     assert IDENTITY_LOCK_GIRL in _render_girl()
 
 
 def test_dang_2_ta_lai_khuon_mat_da_khoa_thanh_chu():
-    """Không chỉ trỏ tới khối lock mà phải tả lại đặc điểm ngay trong câu đầu."""
     phrase = mh._SUBJECT_PHRASE_GIRL.lower()
     for feature in ("heart-shaped face", "jawline", "doe eyes", "nose", "lips", "20-year-old"):
         assert feature in phrase, f"câu tả chủ thể thiếu {feature}"
@@ -226,8 +212,7 @@ def test_dang_2_cam_ta_mat_nguoi_trong_anh():
     assert "pose" in rule and "outfit" in rule
 
 
-# ─── Dạng 3: mặt tôi ─────────────────────────────────
-
+# ─── Dạng 3: mặt tôi ────────────────────────────────
 def test_dang_3_giu_lock_reference():
     assert IDENTITY_LOCK_REFERENCE in _render_reference()
 
@@ -238,23 +223,17 @@ def test_dang_3_noi_ro_la_anh_dinh_kem():
 
 
 def test_dang_3_cam_bia_dac_diem_khuon_mat():
-    """Bịa mắt/mũi/môi sẽ đánh nhau với ảnh thật user đính kèm."""
     rule = mh._PHOTO_SUBJECT_RULE_REFERENCE
     assert "DO NOT invent" in rule
     assert "eye colour" in rule and "face shape" in rule
 
-
-# ─── 3 dạng phải khác nhau thật sự ──────────────────────────
 
 def test_ba_dang_cho_ra_ba_prompt_khac_nhau():
     rendered = {render() for render in _ALL_MODES}
     assert len(rendered) == 3
 
 
-# ─── Từ khoá định tuyến ───────────────────────────────
-
 def _route(caption: str) -> str:
-    """Lặp lại đúng thứ tự điều kiện trong photo_msg."""
     low = caption.lower()
     if any(kw in low for kw in KEEP_FACE_KEYWORDS):
         return "reference"
@@ -273,5 +252,4 @@ def test_dinh_tuyen_theo_tu_khoa():
 
 
 def test_giu_mat_uu_tien_hon_co_gai_20():
-    """Caption chứa cả hai từ khoá thì phải đi nhánh giữ mặt."""
     assert _route("giữ mặt cô gái 20") == "reference"
