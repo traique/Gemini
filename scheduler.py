@@ -71,6 +71,11 @@ def _seconds_until_next_hour(hour: int) -> float:
 
 async def _build_portfolio_digest(user_id: int) -> Optional[str]:
     from stock import analysis as stock_analysis
+    from stock import portfolio
+
+    holdings = await portfolio.list_holdings(user_id)
+    if holdings:
+        return await portfolio.build_report(user_id, digest=True)
 
     facts = await db.get_facts(user_id)
     portfolio_text = " ".join(
@@ -82,13 +87,14 @@ async def _build_portfolio_digest(user_id: int) -> Optional[str]:
     if not symbols:
         return None
 
-    lines = ["📊 *Digest danh mục sáng nay:*"]
+    lines = ["📊 *Digest danh mục cũ trong trí nhớ:*"]
     for symbol in symbols:
         try:
             lines.append(await stock_analysis.quick_quote(symbol))
         except Exception:
             logger.warning("scheduler: lỗi lấy giá %s cho digest.", symbol, exc_info=True)
             lines.append(f"{symbol}: ❌ lỗi lấy giá lúc này")
+    lines.append("\nDùng /themcp để chuyển sang danh mục có số lượng và giá vốn.")
     return "\n".join(lines)
 
 
