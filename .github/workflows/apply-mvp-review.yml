@@ -52,3 +52,5 @@ jobs:
           git add -A
           git commit -m 'refactor: finalize single-user MVP codebase'
           git push origin main
+
+# Triggered after the initial review run did not produce a commit.
