@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +48,29 @@ SELL_FEE_PCT=0.15
 SELL_TAX_PCT=0.10
 SLIPPAGE_PCT=0.10
 OUT_OF_SAMPLE_RATIO=0.30
+BACKTEST_ALLOW_RENDER_ENV="STOCK_BACKTEST_ALLOW_ON_RENDER"
+RENDER_MAX_SYMBOLS=50
+RENDER_MAX_DAYS=TRADING_DAYS_PER_YEAR*3
+RENDER_CONCURRENCY=2
+DEFAULT_CONCURRENCY=4
+BACKTEST_BATCH_SIZE=50
+
+def is_render_runtime(environ=None):
+    env=os.environ if environ is None else environ
+    return str(env.get("RENDER","")).lower() in ("1","true","yes") or any(env.get(k) for k in ("RENDER_SERVICE_ID","RENDER_INSTANCE_ID","RENDER_EXTERNAL_URL"))
+
+def assert_backtest_runtime_allowed(environ=None):
+    env=os.environ if environ is None else environ
+    if is_render_runtime(env) and str(env.get(BACKTEST_ALLOW_RENDER_ENV,"false")).lower() not in ("1","true","yes"):
+        raise RuntimeError("Heavy backtest is disabled on Render web service. Run it in GitHub Actions/offline, then deploy backtest_stats.json.")
+
+def backtest_runtime_limits(days, symbol_count, environ=None):
+    env=os.environ if environ is None else environ
+    if is_render_runtime(env):
+        return min(days,RENDER_MAX_DAYS),min(symbol_count,RENDER_MAX_SYMBOLS),RENDER_CONCURRENCY
+    requested=max(1,int(env.get("STOCK_BACKTEST_CONCURRENCY",DEFAULT_CONCURRENCY)))
+    return days,symbol_count,min(requested,8)
+
 @dataclass(frozen=True)
 class TradingCosts:
     buy_fee_pct: float=BUY_FEE_PCT
@@ -283,15 +307,29 @@ def run_out_of_sample_on_series(symbol,closes,highs,lows,volumes,dates,vnindex_c
     return OutOfSampleResult(split,train,test)
 
 async def run_backtest(symbols: list[str] | None = None, days: int = DEFAULT_BACKTEST_DAYS) -> list[BacktestResult]:
-    """Cần mạng thật (DNSE) - chạy trong môi trường production/bot, KHÔNG chạy
-    được trong sandbox không có egress tới DNSE."""
+    """Run offline research only. Render is denied by default to protect the web service.
+
+    Even with the explicit Render override, work is capped at 50 symbols,
+    three years and concurrency two. All runtimes submit bounded batches so
+    a full universe does not create thousands of in-memory tasks at once.
+    """
     import asyncio
-    symbols=symbols or await providers.fetch_symbol_universe(); vnindex_series=await providers.fetch_ohlcv("VNINDEX",days=days); semaphore=asyncio.Semaphore(8)
+    assert_backtest_runtime_allowed()
+    symbols=list(symbols or await providers.fetch_symbol_universe())
+    days,max_symbols,concurrency=backtest_runtime_limits(days,len(symbols))
+    symbols=symbols[:max_symbols]
+    vnindex_series=await providers.fetch_ohlcv("VNINDEX",days=days)
+    semaphore=asyncio.Semaphore(concurrency)
     async def one(sym):
-        async with semaphore: series=await providers.fetch_ohlcv(sym,days=days)
+        async with semaphore:
+            series=await providers.fetch_ohlcv(sym,days=days)
         if len(series.closes)<MIN_BARS_TO_START+5: return None
         return run_out_of_sample_on_series(sym,series.closes,series.highs,series.lows,series.volumes,series.dates,vnindex_series.closes,vnindex_series.highs,vnindex_series.lows,vnindex_series.volumes).test
-    return [r for r in await asyncio.gather(*(one(s) for s in symbols)) if r is not None]
+    results=[]
+    for start in range(0,len(symbols),BACKTEST_BATCH_SIZE):
+        batch=await asyncio.gather(*(one(sym) for sym in symbols[start:start+BACKTEST_BATCH_SIZE]))
+        results.extend(result for result in batch if result is not None)
+    return results
 
 
 def format_backtest_summary(results: list[BacktestResult]) -> str:

@@ -71,6 +71,9 @@ services:
         value: "8"
       - key: CHAT_SESSION_TIMEOUT_SEC
         value: "21600"
+      # Heavy research jobs must never share the free web-service process.
+      - key: STOCK_BACKTEST_ALLOW_ON_RENDER
+        value: "false"
       - key: COOKIE_PROBE_INTERVAL_SEC
         value: "900"
       - key: API_QUOTA_COOLDOWN_SEC
