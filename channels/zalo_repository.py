@@ -95,9 +95,7 @@ async def ensure_schema() -> None:
                 )
                 """
             )
-            await conn.execute(
-                "ALTER TABLE zalo_outbox ADD COLUMN IF NOT EXISTS summary_id BIGINT"
-            )
+            await conn.execute("ALTER TABLE zalo_outbox ADD COLUMN IF NOT EXISTS summary_id BIGINT")
             await conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_zalo_outbox_summary
