@@ -1,4 +1,5 @@
 """Generate one idempotent digest per tracked group after 09:00 Vietnam time."""
+
 import asyncio
 import logging
 import os
@@ -14,20 +15,17 @@ _task: asyncio.Task | None = None
 
 
 def _enabled() -> bool:
-    # Controller có thể được ghép đôi động và lưu mã hoá trong DB. Không yêu
-    # cầu ZALO_CONTROLLER_ID trong env, nếu không scheduler sẽ không bao giờ
-    # khởi động sau luồng /pair mới.
     enabled = os.getenv("ZALO_ENABLED", "false").strip().lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
     return enabled and bool(os.getenv("ZALO_BRIDGE_SECRET", "").strip())
 
 
 async def _controller_id() -> str:
-    return (
-        os.getenv("ZALO_CONTROLLER_ID", "").strip()
-        or await zalo_session.load_controller()
-    )
+    return os.getenv("ZALO_CONTROLLER_ID", "").strip() or await zalo_session.load_controller()
 
 
 def _hour() -> int:
@@ -49,14 +47,21 @@ async def _run_due_digest() -> None:
         logger.info("Chưa có Zalo controller; bỏ qua lượt tổng kết này.")
         await zalo_repository.cleanup_old_messages(account_id)
         return
+
     for group_id, alias in await zalo_repository.list_groups(account_id):
         if await zalo_repository.summary_exists(account_id, group_id, "daily", start, end):
             continue
         try:
             _, _, content = await summarize_group(account_id, group_id, start, end)
-            created = await zalo_repository.save_summary(account_id, group_id, "daily", start, end, content)
-            if created:
-                await zalo_repository.enqueue_outbox(account_id, recipient_id, content)
+            await zalo_repository.save_summary_and_enqueue(
+                account_id,
+                group_id,
+                "daily",
+                start,
+                end,
+                content,
+                recipient_id,
+            )
         except Exception:
             logger.exception("Không tổng kết được nhóm Zalo %s (%s)", alias, group_id)
     await zalo_repository.cleanup_old_messages(account_id)

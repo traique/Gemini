@@ -1,4 +1,5 @@
 """Background scheduler for reminders and the daily portfolio digest."""
+
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from core import config
 from core import database as db
+from core import idempotency
 
 logger = logging.getLogger(__name__)
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -35,12 +37,14 @@ async def _notify(user_id: int, text: str) -> bool:
 async def _process_due_reminders(due: list[tuple[int, int, str]]) -> None:
     for reminder_id, user_id, message in due:
         if not await _notify(user_id, f"⏰ Nhắc việc: {message}"):
+            await idempotency.release_reminder_claim(reminder_id)
             continue
         try:
             await db.mark_reminder_sent(reminder_id)
         except Exception:
             logger.warning(
-                "scheduler: gửi reminder id=%s thành công nhưng mark sent lỗi; có thể gửi trùng.",
+                "scheduler: gửi reminder id=%s thành công nhưng mark sent lỗi; "
+                "lease sẽ ngăn gửi trùng tức thời.",
                 reminder_id,
                 exc_info=True,
             )
@@ -50,9 +54,9 @@ async def _reminder_loop() -> None:
     while True:
         await asyncio.sleep(config.REMINDER_CHECK_INTERVAL_SEC)
         try:
-            due = await db.get_due_reminders()
+            due = await idempotency.claim_due_reminders()
         except Exception:
-            logger.warning("scheduler: lỗi khi quét reminders đến hạn.", exc_info=True)
+            logger.warning("scheduler: lỗi khi claim reminders đến hạn.", exc_info=True)
             continue
         await _process_due_reminders(due)
 

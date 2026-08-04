@@ -1,15 +1,16 @@
 """Factory đăng ký handler dùng chung cho long polling và webhook."""
+
 import asyncio
 import logging
 
 from telegram import BotCommand
-from telegram.request import HTTPXRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 import scheduler
 import tg_format
 from ai import orchestrator
-from core import config, database as db
+from core import config, database as db, idempotency
 from handlers import chat_router, commands, media_handler, zalo_login
 from services import channel_chat_service
 from services.background_tasks import stop_tracked_tasks
@@ -37,6 +38,7 @@ COMMANDS = [
 
 async def _post_init(app):
     await db.init_db()
+    await idempotency.ensure_schema()
     await app.bot.set_my_commands(COMMANDS)
     await orchestrator.init_provider_state()
     orchestrator.start_background_tasks()
@@ -51,13 +53,9 @@ async def _post_shutdown(app):
             logger.exception("Shutdown step lỗi: %s", label)
 
     await run_step("Telegram scheduler", scheduler.stop())
-    # Memory tasks cần dùng DB nên phải được drain trước khi đóng pool.
     await run_step("Telegram memory tasks", chat_router.stop_background_tasks())
     await run_step("channel memory tasks", channel_chat_service.stop_background_tasks())
 
-    # Dừng các AI task dài hạn và alert task trước khi đóng Gemini/DB. Giữ
-    # việc quản lý lifecycle tập trung tại app factory để cả polling và webhook
-    # dùng chung đúng một thứ tự shutdown.
     probe_task = orchestrator._probe_task
     orchestrator._probe_task = None
     if probe_task is not None and not probe_task.done():
@@ -74,8 +72,6 @@ async def _post_shutdown(app):
         ),
     )
 
-    # reset_client() cancel persist loop nhưng phiên bản hiện tại chưa await
-    # task đó; giữ handle trước khi reset rồi await để không rò task lúc đóng.
     persist_task = orchestrator.cookie_client._persist_task
     await run_step("Gemini cookie client", orchestrator.cookie_client.reset_client())
     if persist_task is not None:
