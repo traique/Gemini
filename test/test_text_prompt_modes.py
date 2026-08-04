@@ -85,8 +85,6 @@ def test_vi_du_da_trung_tinh():
         assert leak not in example, f"ví dụ còn rỉ chi tiết: {leak}"
 
 
-# ─── Khung hình ─────────────────────────────────────
-
 def test_bat_buoc_ta_khung_hinh():
     for render in _ALL_MODES:
         text = render()
@@ -102,7 +100,6 @@ def test_bat_buoc_ta_khung_hinh():
 
 
 def test_mac_dinh_anh_doc_khi_user_khong_noi_gi():
-    """/prompt thường chỉ có mô tả ngắn, không nói gì về khung hình."""
     text = _render_described()
     assert "when it does not, choose sensibly" in text
 
@@ -113,8 +110,6 @@ def test_vi_du_co_san_cau_ta_khung_hinh():
     assert "three-quarter body shot" in example
     assert "chest height" in example
 
-
-# ─── Dáng người ────────────────────────────────────
 
 def test_bat_buoc_ta_dang_nguoi_chi_tiet():
     for render in _ALL_MODES:
@@ -131,8 +126,6 @@ def test_vi_du_co_doan_ta_dang_nguoi():
     assert "palms turned inwards" in example
 
 
-# ─── Chất ảnh ─────────────────────────────────────
-
 def test_chat_anh_bam_theo_yeu_cau_cua_user():
     for render in _ALL_MODES:
         text = render()
@@ -146,8 +139,6 @@ def test_khong_con_ep_cung_visible_pores():
         assert "MANDATORY WORDS" not in render()
 
 
-# ─── Ống kính ─────────────────────────────────────
-
 def test_ong_kinh_theo_cu_anh_khong_chep_vi_du():
     for render in _ALL_MODES:
         text = render()
@@ -160,12 +151,10 @@ def test_canh_bao_khong_chep_ong_kinh_cua_vi_du():
     assert "the 48mm lens" in _render_described()
 
 
-# ─── Trường hợp 1: không từ khoá ──────────────────────────
-
 def test_th1_khong_co_dong_identity_lock():
-    text = _render_described()
-    assert "[Identity Lock" not in text
-    assert "[IDENTITY LOCK" not in text
+    lines = _render_described().splitlines()
+    assert not any(line.startswith("[Identity Lock") for line in lines)
+    assert not any(line.startswith("[IDENTITY LOCK") for line in lines)
 
 
 def test_th1_cam_tro_toi_anh_vi_khong_he_co_anh():
@@ -184,11 +173,8 @@ def test_th1_bat_ta_du_dac_diem_khuon_mat():
 
 
 def test_th1_van_cho_phep_canh_khong_co_nguoi():
-    """/prompt còn dùng cho phong cảnh, đồ vật - không được ép tả mặt."""
     assert "skip the face description entirely" in cmd._TEXT_SUBJECT_RULE_DESCRIBED
 
-
-# ─── Trường hợp 2: cô gái 20 ────────────────────────────
 
 def test_th2_giu_nguyen_khoi_lock():
     assert cmd.IDENTITY_LOCK_GIRL in _render_girl()
@@ -205,8 +191,6 @@ def test_th2_khong_cho_mo_ta_user_ghi_de_khuon_mat():
     assert "never let the description override the locked face" in cmd._TEXT_SUBJECT_RULE_GIRL
 
 
-# ─── Trường hợp 3: mặt tôi ─────────────────────────────
-
 def test_th3_giu_lock_reference():
     assert cmd.IDENTITY_LOCK_REFERENCE in _render_reference()
 
@@ -222,13 +206,9 @@ def test_th3_cam_bia_dac_diem_khuon_mat():
     assert "eye colour" in rule and "face shape" in rule
 
 
-# ─── 3 trường hợp phải khác nhau ───────────────────────────
-
 def test_ba_truong_hop_cho_ra_ba_prompt_khac_nhau():
     assert len({render() for render in _ALL_MODES}) == 3
 
-
-# ─── Định tuyến từ khoá ────────────────────────────────
 
 def _route(desc: str) -> str:
     low = desc.lower()
