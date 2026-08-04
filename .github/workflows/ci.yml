@@ -17,7 +17,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: python -m compileall -q .
-      - run: pytest -q
+      - run: python -m pytest -q
   typescript:
     runs-on: ubuntu-latest
     defaults:
