@@ -1,30 +1,29 @@
-"""Entrypoint dùng để DEPLOY LÊN RENDER (Web Service, dùng webhook thay vì long polling)."""
+"""Entrypoint dùng để deploy lên Render bằng Telegram webhook."""
+
 import asyncio
-import collections
 import hmac
 import io
 import logging
 from contextlib import asynccontextmanager, redirect_stdout
 
-from diagnose_gemini import main as diagnose_main
 from fastapi import FastAPI, Request, Response
 from telegram import Update
 from telegram.ext import Application
 
 import bot_app
 import logging_setup
-from channels.router import router as zalo_router
 from channels import zalo_scheduler
-from core import config
+from channels.router import router as zalo_router
+from core import config, idempotency
+from diagnose_gemini import main as diagnose_main
 from services.background_tasks import stop_tracked_tasks
+from services.concurrency import assistant_turn
 
 logging_setup.configure_logging()
 logger = logging.getLogger(__name__)
 application: Application | None = None
 _background_tasks: set[asyncio.Task] = set()
 _diagnose_lock = asyncio.Lock()
-_seen_updates: "collections.OrderedDict[int, None]" = collections.OrderedDict()
-_SEEN_MAX = 1000
 
 
 async def _stop_webhook_tasks() -> None:
@@ -44,11 +43,12 @@ async def _safe_shutdown(label: str, awaitable) -> None:
         logger.exception("Shutdown step lỗi: %s", label)
 
 
-def _already_seen(update_id: int) -> bool:
-    if update_id in _seen_updates: return True
-    _seen_updates[update_id] = None
-    if len(_seen_updates) > _SEEN_MAX: _seen_updates.popitem(last=False)
-    return False
+async def _process_update(update: Update) -> None:
+    """Preserve one cross-channel conversation order for the single owner."""
+    if application is None:
+        return
+    async with assistant_turn():
+        await application.process_update(update)
 
 
 @asynccontextmanager
@@ -63,8 +63,6 @@ async def lifespan(_: FastAPI):
     try:
         await application.initialize()
         initialized = True
-        # Cleanup functions đều idempotent; đánh dấu trước để vẫn dọn được
-        # phần tài nguyên đã khởi tạo nếu _post_init lỗi giữa chừng.
         app_resources_started = True
         await bot_app._post_init(application)
         await application.start()
@@ -84,10 +82,11 @@ async def lifespan(_: FastAPI):
         await _safe_shutdown("webhook tasks", _stop_webhook_tasks())
         if app_started:
             await _safe_shutdown("Telegram application stop", application.stop())
-        # Khi tự quản lý lifecycle FastAPI, Application.shutdown() không gọi
-        # callback post_shutdown đã đăng ký ở builder; phải gọi cleanup rõ ràng.
         if app_resources_started:
-            await _safe_shutdown("application resources", bot_app._post_shutdown(application))
+            await _safe_shutdown(
+                "application resources",
+                bot_app._post_shutdown(application),
+            )
         if initialized:
             await _safe_shutdown("Telegram application shutdown", application.shutdown())
         application = None
@@ -98,34 +97,52 @@ api.include_router(zalo_router)
 
 
 @api.api_route("/", methods=["GET", "HEAD"])
-async def health() -> dict: return {"status": "ok"}
+async def health() -> dict:
+    return {"status": "ok"}
 
 
 @api.get(config.DIAGNOSE_PATH)
 async def diagnose(request: Request) -> Response:
     token = request.headers.get("X-Diagnose-Token", "")
-    if not config.DIAGNOSE_SECRET or not hmac.compare_digest(token, config.DIAGNOSE_SECRET): return Response(status_code=403)
+    if not config.DIAGNOSE_SECRET or not hmac.compare_digest(
+        token,
+        config.DIAGNOSE_SECRET,
+    ):
+        return Response(status_code=403)
     async with _diagnose_lock:
         buf = io.StringIO()
         try:
-            with redirect_stdout(buf): await diagnose_main()
-        except Exception as e: print(f"Lỗi ngoài dự kiến: {type(e).__name__}: {e}")
+            with redirect_stdout(buf):
+                await diagnose_main()
+        except Exception as exc:
+            print(f"Lỗi ngoài dự kiến: {type(exc).__name__}: {exc}")
         return Response(content=buf.getvalue(), media_type="text/plain; charset=utf-8")
 
 
 @api.post(config.WEBHOOK_PATH)
 async def telegram_webhook(request: Request) -> Response:
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not config.WEBHOOK_SECRET or not hmac.compare_digest(secret, config.WEBHOOK_SECRET): return Response(status_code=403)
-    if application is None: return Response(status_code=503)
+    if not config.WEBHOOK_SECRET or not hmac.compare_digest(secret, config.WEBHOOK_SECRET):
+        return Response(status_code=403)
+    if application is None:
+        return Response(status_code=503)
+
     update = Update.de_json(await request.json(), application.bot)
-    if update.update_id is not None and _already_seen(update.update_id): return Response(status_code=200)
-    task = asyncio.create_task(application.process_update(update))
+    if update.update_id is not None:
+        if not await idempotency.claim_telegram_update(update.update_id):
+            return Response(status_code=200)
+
+    task = asyncio.create_task(_process_update(update))
     _background_tasks.add(task)
-    def done(t: asyncio.Task) -> None:
-        _background_tasks.discard(t)
-        if not t.cancelled():
-            try: t.result()
-            except Exception: logger.exception("Background task xử lý update lỗi không bắt được")
+
+    def done(completed: asyncio.Task) -> None:
+        _background_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            completed.result()
+        except Exception:
+            logger.exception("Background task xử lý update lỗi không bắt được")
+
     task.add_done_callback(done)
     return Response(status_code=200)
