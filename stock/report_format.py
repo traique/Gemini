@@ -1,48 +1,41 @@
-"""Định dạng số và làm sạch báo cáo phân tích cổ phiếu.
+"""Chuẩn hoá cách TRÌNH BÀY số liệu trong báo cáo phân tích cổ phiếu.
 
-Tách khỏi stock/analysis.py để tầng logic thuần hàm (không I/O, không LLM) có
-thể unit test trực tiếp. Đây là chốt cuối chặn các lỗi TRÌNH BÀY đã lọt ra tin
-nhắn thật ngày 05/08/2026 và có thể khiến người đọc hiểu sai mức độ rủi ro:
+Module thuần hàm, không I/O, không phụ thuộc provider - để test trực tiếp
+từng lỗi trình bày đã từng lọt tới người dùng thật.
 
-- Mốc hỗ trợ/kháng cự nêu ra mà không kèm khoảng cách % so với giá hiện tại,
-  nên mốc cách 25% trông ngang hàng với mốc cách 2%.
-- MACD histogram in bằng đồng tuyệt đối (vd +24.44 trên cổ phiếu 14.000đ chỉ
-  là 0,17% giá) đọc như một tín hiệu rất mạnh.
-- ADX in trơ số, không nói xu hướng đang nghiêng lên hay nghiêng xuống, nên
-  ADX 43,7 của một mã đang giảm bị diễn giải thành "xu hướng mạnh" tích cực.
-- Đoạn "đây chỉ là tham khảo" bị in hai lần ở cuối cùng một báo cáo.
-- Số trộn lẫn dấu chấm/phẩy thập phân trong cùng một tin nhắn.
-- Tin Google News lấy theo chuỗi "<mã> cổ phiếu" nhưng không kiểm tra mã có
-  trong tiêu đề, nên tin của mã khác bị gán cho mã đang phân tích - và tệ hơn,
-  sentiment của tin đó chảy vào news_impact của tầng policy.
+Nguyên tắc: module này KHÔNG thay đổi bất kỳ con số nào do stock/policy.py
+quyết định (stop, target, tỷ trọng, R:R). Nó chỉ quyết định số đó được viết
+ra như thế nào và kèm cảnh báo gì.
 """
 
 import math
 import re
-from datetime import timezone
-from email.utils import parsedate_to_datetime
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 _VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Ngưỡng "mốc giá còn ý nghĩa giao dịch". Xa hơn mức này thì mốc chỉ còn giá
-# trị tham chiếu dài hạn, không dùng làm điểm vào/ra trong vài phiên tới.
+# Mốc xa hơn ngưỡng này không còn dùng được làm điểm vào/ra ngắn hạn nữa.
 NEAR_LEVEL_MAX_PCT = 7.0
 
 
+def _vn_number(text: str) -> str:
+    """Đổi dấu phân cách kiểu Anh sang kiểu Việt Nam."""
+    return text.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
 def fmt_price(value: float | None) -> str:
-    """70370 -> "70.370". Chuẩn VN: dấu chấm phân cách nghìn."""
+    """Giá/khối lượng: dấu chấm phân cách nghìn, không phần thập phân."""
     if value is None:
         return "N/A"
     return f"{value:,.0f}".replace(",", ".")
 
 
 def fmt_number(value: float | None, decimals: int = 2) -> str:
-    """1234.56 -> "1.234,56". Dấu chấm nghìn, dấu PHẨY thập phân."""
+    """Số thập phân theo chuẩn VN: 1.234,56 thay vì 1,234.56."""
     if value is None:
         return "N/A"
-    text = f"{value:,.{decimals}f}"
-    return text.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+    return _vn_number(f"{value:,.{decimals}f}")
 
 
 def fmt_pct(value: float | None, decimals: int = 2) -> str:
@@ -59,46 +52,58 @@ def fmt_signed_pct(value: float | None, decimals: int = 2) -> str:
 
 
 def level_distance_pct(price: float | None, level: float | None) -> float | None:
-    """Khoảng cách từ GIÁ tới MỐC, tính theo % giá hiện tại.
-
-    Dương = mốc nằm TRÊN giá (kháng cự), âm = mốc nằm DƯỚI giá (hỗ trợ). Lấy
-    giá hiện tại làm mẫu số vì đây là con số người đọc dùng để ước lượng lãi/lỗ
-    từ vị thế của họ ngay lúc này.
-    """
-    if not price or price <= 0 or not level or level <= 0:
+    """Mốc cách giá hiện tại bao nhiêu phần trăm (dương = nằm trên giá)."""
+    if not price or price <= 0 or level is None:
         return None
     return round((level - price) / price * 100, 2)
 
 
-def format_level(price: float, level: float, touches: int | None = None) -> str:
-    """Một mốc giá LUÔN đi kèm khoảng cách % - không bao giờ in số trơ."""
-    details = []
+def format_level(price: float | None, level: float | None, touches: int | None = None) -> str:
+    """Một mốc giá LUÔN kèm khoảng cách % so với giá hiện tại.
+
+    Báo cáo FPT/GEX từng nêu "hỗ trợ 70.370", "kháng cự 31.900" như nhau,
+    dù một mốc cách giá 1,6% và mốc kia cách tới 28%. Thiếu khoảng cách %,
+    người đọc không thể biết mốc nào dùng được để vào/ra lệnh.
+    """
+    if level is None:
+        return "chưa xác định"
+    text = f"{fmt_price(level)} VND"
     dist = level_distance_pct(price, level)
     if dist is not None:
-        details.append(f"{fmt_signed_pct(dist, 1)} so với giá")
+        text += f" ({fmt_signed_pct(dist)} so với giá hiện tại)"
     if touches:
-        details.append(f"{touches} lần test")
-    text = fmt_price(level)
-    if details:
-        text += " (" + ", ".join(details) + ")"
+        text += f", {touches} lần test"
     return text
 
 
-def _nearest(levels: list[tuple[float, int]], price: float, above: bool) -> tuple[float, int] | None:
-    side = [lv for lv in levels if (lv[0] > price if above else lv[0] < price)]
-    if not side:
+def _nearest(
+    levels: list[tuple[float, int]],
+    price: float,
+    above: bool,
+) -> tuple[float, int] | None:
+    candidates = [lv for lv in levels if (lv[0] > price if above else lv[0] < price)]
+    if not candidates:
         return None
-    return min(side, key=lambda lv: abs(lv[0] - price))
+    return min(candidates, key=lambda lv: abs(lv[0] - price))
 
 
 def _level_note(dist: float, atr_pct: float | None) -> str:
-    """Cảnh báo hai chiều cho một mốc: quá xa để giao dịch, hoặc quá gần so
-    với biên động bình thường một phiên (ATR) nên rất dễ bị xuyên bởi nhiễu.
+    """Hai cảnh báo trái ngược nhau cho cùng một mốc.
+
+    Quá xa: không dùng được làm điểm vào/ra ngắn hạn. Quá gần so với biên
+    động một phiên (ATR): rất dễ bị xuyên qua bởi nhiễu, không phải tín
+    hiệu đổi xu hướng.
     """
     if abs(dist) > NEAR_LEVEL_MAX_PCT:
-        return f" - cách quá xa (>{fmt_number(NEAR_LEVEL_MAX_PCT, 0)}%), KHÔNG dùng làm điểm vào/ra ngắn hạn"
+        return (
+            f" - cách quá xa (>{fmt_number(NEAR_LEVEL_MAX_PCT, 0)}%), "
+            "KHÔNG dùng làm điểm vào/ra ngắn hạn"
+        )
     if atr_pct and abs(dist) < atr_pct:
-        return f" - nằm trong biên nhiễu một phiên (ATR {fmt_pct(atr_pct)}), dễ bị xuyên qua mà chưa đổi xu hướng"
+        return (
+            f" - nằm trong biên nhiễu một phiên (ATR {fmt_pct(atr_pct)}), "
+            "dễ bị xuyên qua mà chưa đổi xu hướng"
+        )
     return ""
 
 
@@ -108,11 +113,10 @@ def nearest_levels_line(
     resistances: list[tuple[float, int]],
     atr_pct: float | None = None,
 ) -> str:
-    """Dòng bắt buộc nêu MỐC GẦN NHẤT hai phía kèm khoảng cách %.
+    """Dòng riêng cho MỐC GẦN NHẤT hai phía, kèm cảnh báo dùng được hay không.
 
-    find_key_levels chỉ lấy swing pivot trong 60 phiên, nên mốc gần nhất có thể
-    cách giá 20-30%. Lúc đó phải nói thẳng là không có mốc nào đủ gần, thay vì
-    để người đọc tưởng đó là vùng mua/bán khả thi trong vài phiên tới.
+    GEX ngày 05/08/2026: kháng cự gần nhất cách tới +28% nhưng vẫn được
+    trình bày như vùng chốt lọi khả thi trong ngắn hạn.
     """
     parts = []
     near_support = _nearest(supports, price, above=False)
@@ -120,42 +124,51 @@ def nearest_levels_line(
     if near_support:
         dist = level_distance_pct(price, near_support[0])
         note = _level_note(dist, atr_pct) if dist is not None else ""
-        parts.append(f"Hỗ trợ gần nhất {format_level(price, near_support[0], near_support[1])}{note}")
+        level_text = format_level(price, near_support[0], near_support[1])
+        parts.append(f"Hỗ trợ gần nhất {level_text}{note}")
     else:
-        parts.append("Hỗ trợ gần nhất: không tìm được mốc swing nào dưới giá hiện tại")
+        parts.append("Chưa có mốc hỗ trợ swing nào dưới giá hiện tại")
     if near_resistance:
         dist = level_distance_pct(price, near_resistance[0])
         note = _level_note(dist, atr_pct) if dist is not None else ""
         level_text = format_level(price, near_resistance[0], near_resistance[1])
         parts.append(f"Kháng cự gần nhất {level_text}{note}")
     else:
-        parts.append("Kháng cự gần nhất: không tìm được mốc swing nào trên giá hiện tại")
-    return "MỐC GẦN NHẤT (dùng mốc này khi nói về điểm vào/ra): " + " | ".join(parts)
+        parts.append("Chưa có mốc kháng cự swing nào trên giá hiện tại")
+    prefix = "MỐC GẦN NHẤT (dùng mốc này khi nói về điểm vào/ra): "
+    return prefix + " | ".join(parts)
 
 
 def macd_strength_line(macd_line: float, histogram: float, price: float | None) -> str:
-    """MACD quy về % giá - số tuyệt đối vô nghĩa khi so giữa các mã.
+    """MACD quy theo % giá.
 
-    +24.44 nghe rất mạnh, nhưng trên cổ phiếu 14.000đ nó chỉ là 0,17% giá.
+    MACD tuyệt đối không so sánh được giữa các mã: histogram +24,44 trên cổ
+    phiếu 13.950đ chỉ là 0,18% giá, gần như không đáng kể, nhưng đọc số trơ
+    thì dễ tưởng là tín hiệu đảo chiều thật (ca CII ngày 05/08/2026).
     """
     if not price or price <= 0:
-        return f"MACD: line {fmt_number(macd_line)} | hist {fmt_number(histogram)} (chưa quy đổi được theo % giá)"
-    hist_pct = histogram / price * 100
-    line_pct = macd_line / price * 100
-    abs_hist = abs(hist_pct)
-    if abs_hist < 0.2:
+        return (
+            f"MACD: line {fmt_number(macd_line)}, histogram "
+            f"{fmt_number(histogram)} (chưa quy đổi được theo % giá)"
+        )
+    hist_pct = abs(histogram) / price * 100
+    if hist_pct < 0.2:
         strength = "rất yếu, gần như không đáng kể"
-    elif abs_hist < 0.5:
+    elif hist_pct < 0.5:
         strength = "yếu"
-    elif abs_hist < 1.0:
+    elif hist_pct < 1.5:
         strength = "trung bình"
     else:
         strength = "mạnh"
+    if histogram > 0:
+        direction = "dương"
+    elif histogram < 0:
+        direction = "âm"
+    else:
+        direction = "cân bằng"
     return (
-        f"MACD quy theo % giá: line {fmt_signed_pct(line_pct)} | "
-        f"histogram {fmt_signed_pct(hist_pct)} giá -> độ mạnh {strength}. "
-        f"Bắt buộc mô tả MACD theo % giá này, KHÔNG nêu số tuyệt đối "
-        f"({fmt_number(histogram)}) như thể là biên độ lớn."
+        f"MACD: histogram {fmt_number(histogram)} = {fmt_pct(hist_pct)} "
+        f"giá hiện tại, {direction}, {strength}"
     )
 
 
@@ -166,135 +179,126 @@ def adx_direction_line(
     trending: bool,
     available: bool = True,
 ) -> str:
-    """ADX chỉ đo ĐỘ MẠNH, hướng do +DI/-DI quyết định.
+    """ADX BẮT BUỘC kèm hướng.
 
-    Thiếu câu này, ADX 43,7 của một mã đang giảm bị diễn giải thành "xu hướng
-    tương đối mạnh" theo nghĩa tích cực.
+    ADX chỉ đo độ mạnh, không đo hướng. Báo cáo FPT từng viết "ADX 43,7 -
+    xu hướng tương đối mạnh" mà không nói mạnh theo chiều nào, người đọc
+    mặc định hiểu là chiều tăng - rất dễ dẫn tới mua vào một mã đang giảm
+    mạnh.
     """
     if not available:
-        return "ADX: chưa đủ dữ liệu H/L thật -> KHÔNG được kết luận xu hướng mạnh hay yếu."
+        return "ADX: chưa đủ dữ liệu H/L thật để tính"
     if di_plus > di_minus:
-        direction = "nghiêng TĂNG (+DI > -DI)"
+        bias = "nghiêng TĂNG (+DI > -DI)"
     elif di_minus > di_plus:
-        direction = "nghiêng GIẢM (-DI > +DI)"
+        bias = "nghiêng GIẢM (-DI > +DI)"
     else:
-        direction = "không rõ hướng (+DI = -DI)"
-    strength = "có xu hướng rõ" if trending else "sideway, chưa có xu hướng rõ"
+        bias = "chưa rõ hướng (+DI xấp xỉ -DI)"
+    strength = "xu hướng rõ" if trending else "sideway, chưa thành xu hướng"
     return (
-        f"ADX {fmt_number(adx, 1)}: {strength}, {direction} "
-        f"(+DI {fmt_number(di_plus, 1)} vs -DI {fmt_number(di_minus, 1)}). "
-        f"ADX chỉ đo ĐỘ MẠNH của xu hướng, PHẢI nêu hướng theo +DI/-DI, "
-        f"tuyệt đối không mặc định ADX cao là tín hiệu tăng."
+        f"ADX {fmt_number(adx, 1)}: {strength}, {bias} "
+        f"(+DI {fmt_number(di_plus, 1)} vs -DI {fmt_number(di_minus, 1)})"
     )
 
 
 def title_mentions_symbol(title: str, symbol: str) -> bool:
-    """Tiêu đề có nhắc ĐÚNG mã này không (so khớp theo biên từ, không substring).
-
-    "Cổ phiếu FPT tăng trần" -> True. "Nhóm VN30 đồng loạt tăng trần" -> False,
-    dù Google News vẫn trả tin đó cho truy vấn "FPT cổ phiếu".
-    """
+    """Tiêu đề tin có nhắc ĐÚNG mã này không (so khớp theo biên từ)."""
     if not title or not symbol:
         return False
     pattern = rf"(?<![A-Za-z0-9]){re.escape(symbol)}(?![A-Za-z0-9])"
-    return re.search(pattern, title, re.IGNORECASE) is not None
+    return bool(re.search(pattern, title, re.IGNORECASE))
 
 
 def relevant_news_impact(items: list[tuple[str, float]], symbol: str) -> float:
-    """news_impact CHỈ tính trên tin có nhắc đúng mã.
+    """news_impact chỉ được tính trên tin CÓ NHẮC ĐÚNG MÃ.
 
-    providers.calc_news_impact lấy trung bình sentiment của MỌI tin Google News
-    trả về, kể cả tin của mã khác. Điểm đó là một đầu vào của tầng policy, nên
-    tin không liên quan đang tác động trực tiếp tới khuyến nghị mua/bán.
+    providers.fetch_news tìm Google News bằng chuỗi "<mã> cổ phiếu" nhưng
+    không kiểm tra mã có trong tiêu đề, nên tin thị trường chung hoặc tin
+    của mã khác vẫn lọt vào. Nếu lấy trung bình sentiment MỌI tin, cảm xúc
+    của tin không liên quan chảy thẳng vào PolicyInputs.news_impact, tức là
+    ảnh hưởng trực tiếp tới khuyến nghị mua/bán bằng tiền thật.
     """
-    relevant = [s for title, s in items if title_mentions_symbol(title, symbol)]
+    relevant = [score for title, score in items if title_mentions_symbol(title, symbol)]
     if not relevant:
         return 0.0
     avg = sum(relevant) / len(relevant)
-    return max(-2.0, min(2.0, avg * math.log(len(relevant) + 1)))
+    return round(max(-2.0, min(2.0, avg * math.log(len(relevant) + 1))), 2)
 
 
 def fmt_news_date(raw: str) -> str:
-    """pubDate dạng RFC822 -> "05/08/2026". Trả "" nếu không parse được."""
+    """Ngày đăng tin theo dd/mm/yyyy để không trích tin cũ như tin mới."""
     if not raw:
         return ""
-    try:
-        dt = parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
-        return ""
-    if dt is None:
-        return ""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(_VN_TZ).strftime("%d/%m/%Y")
+    text = raw.strip()
+    patterns = ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+    for pattern in patterns:
+        try:
+            parsed = datetime.strptime(text, pattern)
+        except ValueError:
+            continue
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(_VN_TZ)
+        return parsed.strftime("%d/%m/%Y")
+    return text
 
 
+# Những thói quen văn phong làm loãng báo cáo tiền thật: tự giới thiệu lại ở
+# mọi tin nhắn, danh xưng thân mật quá đà, và câu "nhiệm vụ của em xong rồi".
 _SELF_INTRO_RE = re.compile(
-    r"^\s*(?:anh\s*ơi[,!.\s]*)?em\s+lan\s+anh\s+(?:đây|xin\s+chào)[^.!?\n]*[.!?]\s*",
+    r"^\s*(anh|chị)\s*ơi[,!\s]*em\s+lan\s+anh\s+đây\s*(ạ)?\s*[!.,]*\s*",
     re.IGNORECASE,
 )
-_PET_NAME_RE = re.compile(r"\banh\s+yêu\b", re.IGNORECASE)
+_PET_NAME_RE = re.compile(r"\s*,?\s*anh\s+yêu\b", re.IGNORECASE)
 _TASK_DONE_RE = re.compile(
-    r"^\s*nhiệm vụ[^.!?\n]*(?:xong|hoàn thành)[^.!?\n]*[.!?]\s*$",
+    r"[^\n]*nhiệm\s+vụ[^\n]*(xong|hoàn thành)[^\n]*\n?",
     re.IGNORECASE,
 )
+
 _DISCLAIMER_HINTS = (
     "chỉ là tham khảo",
-    "mang tính tham khảo",
-    "để tham khảo",
+    "chỉ mang tính tham khảo",
     "không phải khuyến nghị",
     "không phải là khuyến nghị",
-    "khuyến nghị đầu tư",
     "tự chịu trách nhiệm",
     "quyết định cuối cùng",
+    "cân nhắc kỹ trước khi",
+    "khuyến nghị đầu tư",
 )
-# Đoạn dài thì gần như chắc chắn là nội dung phân tích có lồng câu nhắc nhở,
-# không phải đoạn disclaimer thuần - không được xoá kẻo mất nội dung thật.
+
+# Đoạn dài hơn ngưỡng này được coi là nội dung phân tích thật, không phải
+# disclaimer - tránh xoá oan một đoạn lập luận chỉ vì có chữ "tham khảo".
 _DISCLAIMER_MAX_LEN = 400
 
 
-def _is_disclaimer(paragraph: str) -> bool:
-    if len(paragraph) > _DISCLAIMER_MAX_LEN:
+def _is_disclaimer(block: str) -> bool:
+    if len(block) > _DISCLAIMER_MAX_LEN:
         return False
-    lower = paragraph.lower()
-    return any(hint in lower for hint in _DISCLAIMER_HINTS)
+    lowered = block.lower()
+    return any(hint in lowered for hint in _DISCLAIMER_HINTS)
 
 
 def clean_analysis_output(text: str) -> str:
-    """Chốt cuối trước khi gửi báo cáo cho người dùng.
+    """Làm sạch đầu ra LLM trước khi gửi cho người dùng.
 
-    Bỏ câu tự giới thiệu, bỏ danh xưng thân mật quá đà trong báo cáo tiền thật,
-    bỏ câu "nhiệm vụ của em xong rồi", và giữ ĐÚNG MỘT đoạn disclaimer. Cả
-    prompt và hàm này đều canh việc chỉ có một disclaimer: prompt là lớp chính,
-    hàm này là lớp chặn tất định vì LLM sinh ra không ổn định (cùng một prompt,
-    FPT bị lặp hai lần còn CII thì không).
+    Prompt đã yêu cầu những điều này, nhưng LLM không ổn định: cùng một
+    prompt, báo cáo FPT lặp disclaimer hai lần còn CII thì không. Đây là lớp
+    chặn cuối, không phụ thuộc vào việc LLM có tuân lệnh hay không.
     """
     if not text:
-        return text
+        return ""
     cleaned = _SELF_INTRO_RE.sub("", text.strip(), count=1)
-    cleaned = _PET_NAME_RE.sub("anh", cleaned)
-    separator = "\n\n" if "\n\n" in cleaned else "\n"
-    if separator == "\n\n":
-        blocks = re.split(r"\n\s*\n", cleaned)
-    else:
-        blocks = cleaned.split("\n")
+    cleaned = _PET_NAME_RE.sub("", cleaned)
+    cleaned = _TASK_DONE_RE.sub("", cleaned)
+    blocks = re.split(r"\n\s*\n", cleaned)
     result: list[str] = []
-    seen: set[str] = set()
-    disclaimer_kept = False
+    seen_disclaimer = False
     for block in blocks:
-        para = block.strip()
-        if not para:
+        stripped = block.strip()
+        if not stripped:
             continue
-        if _TASK_DONE_RE.match(para):
-            continue
-        key = re.sub(r"\W+", "", para.lower())
-        if key and key in seen:
-            continue
-        if _is_disclaimer(para):
-            if disclaimer_kept:
+        if _is_disclaimer(stripped):
+            if seen_disclaimer:
                 continue
-            disclaimer_kept = True
-        if key:
-            seen.add(key)
-        result.append(para)
-    return separator.join(result).strip()
+            seen_disclaimer = True
+        result.append(stripped)
+    return "\n\n".join(result).strip()
