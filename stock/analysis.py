@@ -13,6 +13,7 @@ from stock import backtest
 from stock import features as feat
 from stock import fundamentals
 from stock import policy
+from stock import price_adjust
 from stock import providers
 from stock import report_format as rfmt
 from stock import sector
@@ -178,12 +179,12 @@ _STRONG_ANALYSIS_KEYWORDS = [
     "giữ hay bán", "giu hay ban", "nên giữ", "nen giu",
 ]
 
-# Từ khoá YẾU: đứng một mình chúng là ngôn ngữ tâm sự đời thường ("kẹt xe",
+# Từ khoá YẾU: đứng một mình chúng là ngôn ngữ tâm sự đời thường ("kệt xe",
 # "giờ sao anh", "làm sao bây giờ") nên chỉ được coi là yêu cầu phân tích khi
 # tin nhắn có thêm ngữ cảnh chứng khoán hoặc đã phát hiện được mã cổ phiếu.
 _WEAK_ANALYSIS_KEYWORDS = [
     "giờ sao", "gio sao", "làm sao", "lam sao",
-    "kẹt", "ket", "về bờ", "ve bo",
+    "kệt", "ket", "về bờ", "ve bo",
 ]
 
 # Giữ tên cũ cho code/test còn tham chiếu.
@@ -209,7 +210,7 @@ def wants_full_analysis(text: str, symbols: list[str] | None = None) -> bool:
     làm bot chạy nguyên pipeline phân tích (nhiều request mạng + 1 lượt gọi
     LLM) cho những câu chẳng liên quan.
 
-    Nhóm từ khoá yếu ("kẹt", "làm sao", "giờ sao", "về bờ") chỉ tính khi tin
+    Nhóm từ khoá yếu ("kệt", "làm sao", "giờ sao", "về bờ") chỉ tính khi tin
     nhắn có ngữ cảnh chứng khoán hoặc caller đã phát hiện được mã - truyền
     `symbols` vào để dùng tín hiệu này.
     """
@@ -372,6 +373,9 @@ class StockContext:
     # chưa hào hứng") trong khi giá realtime đã +2,51% - mâu thuẫn ngay trong
     # cùng một tin nhắn (ca CII ngày 05/08/2026).
     last_bar_date: str = ""
+    # Cảnh báo chuỗi giá có thể chưa điều chỉnh sau chia tách/cổ tức/thưởng.
+    # Rỗng = không phát hiện gap bất thường nào (xem stock/price_adjust.py).
+    adjustment_note: str = ""
 
 async def _safe_sector_prompt(symbol: str) -> str:
     try:
@@ -441,12 +445,20 @@ async def build_context(symbol: str, *, user_id: int | None = None, is_holding: 
     if not symbol_series.closes: return None
 
     quality = validation.validate_ohlcv(symbol_series.closes, symbol_series.highs, symbol_series.lows, symbol_series.volumes, symbol_series.dates)
+    # Kiểm tra chuỗi giá đã điều chỉnh sau chia tách/cổ tức chưa. OhlcvSeries có
+    # sẵn trường is_adjusted từ đầu nhưng chưa provider nào gán giá trị, nên
+    # trước đây hệ thống hoàn toàn không biết SMA50/Donchian/ATR14/trend 3
+    # tháng có đang tính trên một gap giả của ngày GDKHQ hay không.
+    audit = price_adjust.audit_series(symbol, symbol_series.source, symbol_series.closes, symbol_series.dates)
+    symbol_series.is_adjusted = audit.is_adjusted
+    if audit.gaps:
+        logger.warning("Chuỗi giá %s (nguồn %s) có %d gap nghi điều chỉnh giá", symbol, symbol_series.source, len(audit.gaps))
     # analysis_price = close của phiên gần nhất trong CHUỖI OHLCV - toàn bộ
     # feature/policy (Donchian, Bollinger, S/R, session...) phải nhìn CÙNG
     # một thời điểm để không tự mâu thuẫn nhau (P0-3). quote.price là tick
     # realtime, có thể lệch pha với closes[-1] (vd trước giờ mở cửa, hoặc
     # cuối tuần) - chỉ dùng để HIỂN THỊ "giá khớp hiện tại", không đưa vào
-    # tính toán stop/target/R:R.
+    # tính stop/target/R:R.
     analysis_price = symbol_series.price
     last_bar_date = symbol_series.dates[-1] if symbol_series.dates else ""
     realtime_quote_line = None
@@ -483,7 +495,7 @@ async def build_context(symbol: str, *, user_id: int | None = None, is_holding: 
     decision = policy.evaluate_policy(policy.PolicyInputs(price=analysis_price, stats=stats, enhanced=enhanced, ma_alignment=ma_alignment, support_resistance=support_resistance, liquidity=liquidity, session=session, relative_strength=relative_strength, trend_score=trend_score, news_impact=news_impact, quality=quality, vnindex_multi_tf=vnindex_multi_tf, vnindex_adx=vnindex_adx, vnindex_distribution_days=vnindex_distribution_days, key_levels=key_levels, is_holding=holding))
     fetched_at_vn = datetime.now(_VN_TZ).strftime("%H:%M ngày %d/%m/%Y")
 
-    return StockContext(symbol, analysis_price, fetched_at_vn, stats, decision, enhanced, indicator_summary, support_resistance, key_levels, ma_alignment, sector_prompt, fundamentals_prompt, news, relative_strength, liquidity, quality, realtime_quote_line, last_bar_date)
+    return StockContext(symbol, analysis_price, fetched_at_vn, stats, decision, enhanced, indicator_summary, support_resistance, key_levels, ma_alignment, sector_prompt, fundamentals_prompt, news, relative_strength, liquidity, quality, realtime_quote_line, last_bar_date, audit.note)
 
 def _fmt_price(v: float | None) -> str:
     # Nguồn duy nhất cho định dạng giá: stock/report_format.fmt_price (chuẩn VN,
@@ -612,6 +624,7 @@ def build_prompt(ctx: StockContext) -> str:
         realtime_quote_line=ctx.realtime_quote_line, key_levels_line=key_levels_line,
         nearest_levels_line=nearest_levels_line, momentum_detail_line=momentum_detail_line,
         ma_distance_line=ma_distance_line, data_as_of_line=data_as_of_line,
+        adjustment_note=ctx.adjustment_note,
         trade_plan=trade_plan, scenarios=scenarios, backtest_stats_line=backtest_stats_line,
     )
 
@@ -636,6 +649,7 @@ def _fallback_text(ctx: StockContext) -> str:
     if d.invalidation_reason: lines.append(f"Lưu ý: {d.invalidation_reason}")
     if ctx.realtime_quote_line: lines.append(ctx.realtime_quote_line)
     if ctx.liquidity and ctx.liquidity.is_thin: lines.append("⚠️ Thanh khoản TB20 quá thấp.")
+    if ctx.adjustment_note: lines.append("⚠️ Chuỗi giá có gap nghi ngày giao dịch không hưởng quyền chưa được điều chỉnh - SMA50/Donchian/ATR/trend 3 tháng kém tin cậy.")
     if ctx.quality.status != "ok": lines.append(f"⚠️ Chất lượng dữ liệu: {ctx.quality.status}")
     lines.append("⚠️ API dự phòng không phản hồi nên đây là bản rút gọn.")
     return "\n".join(lines)
@@ -671,7 +685,11 @@ async def analyze_portfolio(symbols: list[str], user_text: str, *, user_id: int 
         rsi_text = rfmt.fmt_number(ctx.stats.rsi14, 1) if ctx.stats.rsi14 is not None else "chưa đủ dữ liệu"
         trend_line = f"RSI: {rsi_text} | Trend 3M: {rfmt.fmt_number(ctx.stats.trend_3m)}%"
         bar_note = f" | Chỉ báo tính trên nến đóng cửa {ctx.last_bar_date}" if ctx.last_bar_date else ""
-        combined_data.append(f"Mã {ctx.symbol}: Giá {_fmt_price(ctx.price)} | Tín hiệu hệ thống: {d.action} (Độ tin cậy: {d.confidence}) | {trend_line} | {sr_line}{bar_note}")
+        # Cảnh báo điều chỉnh giá phải đi theo TẮNG MÃ trong danh mục, không
+        # được âm thầm bỏ: mã vừa chia tách sẽ có trend 3M và hỗ trợ/kháng cự
+        # sai lệch hẳn so với các mã còn lại, rất dễ bị xếp hạng oan.
+        adjust_note = " | ⚠️ giá lịch sử nghi chưa điều chỉnh sau chia tách/cổ tức, trend/hỗ trợ/kháng cự của mã này kém tin cậy" if ctx.adjustment_note else ""
+        combined_data.append(f"Mã {ctx.symbol}: Giá {_fmt_price(ctx.price)} | Tín hiệu hệ thống: {d.action} (Độ tin cậy: {d.confidence}) | {trend_line} | {sr_line}{bar_note}{adjust_note}")
 
     data_text = "\n".join(combined_data)
     prompt = (
@@ -680,6 +698,7 @@ async def analyze_portfolio(symbols: list[str], user_text: str, *, user_id: int 
         f"Lan Anh hãy đóng vai broker chuyên nghiệp tư vấn Cơ CẤU DANH MỤC. "
         f"So sánh sức mạnh các mã, khuyên mã nào nên giữ/gồng lãi, mã nào vi phạm kỹ thuật cần hạ tỷ trọng/cắt lỗ. "
         f"Mọi mốc giá nhắc tới phải kèm khoảng cách % đã cho ở trên, không tự tính lại. "
+        f"Mã nào có cảnh báo giá chưa điều chỉnh thì phải nói rõ hạn chế đó khi so sánh, không xếp hạng như số liệu sạch. "
         f"Số viết theo chuẩn Việt Nam (dấu chấm nghìn, dấu phẩy thập phân). "
         f"Văn phong: xưng em/anh tự nhiên, rõ ràng, không tự giới thiệu, không dùng danh xưng thân mật quá đà. "
         f"Chỉ MỘT câu nhắc đây là thông tin tham khảo ở cuối tin nhắn."
@@ -714,7 +733,7 @@ async def analyze_symbol(symbol: str, user_text: str = "", *, force_refresh: boo
         prompt += (
             f"\n\n[LƯU Ý QUAN TRỌNG TỪ HỆ THỐNG]:\n"
             f"Người dùng vừa hỏi: \"{user_text}\"\n"
-            f"Lan Anh hãy phân tích kỹ thuật ở trên, ĐỒNG THỜI phải trả lời trực tiếp "
+            f"Lan Anh hãy phân tích kỹ thuật ở trên, ĐỒNG THỮI phải trả lời trực tiếp "
             f"vào tình huống này của anh ấy: tính mức lời/lỗ BẮNG SỐ dựa trên giá đã cho, "
             f"nêu hướng xử lý cụ thể dựa trên Action đã chốt. TUYỆT ĐỐI không tự giới thiệu, "
             f"không đoán cảm xúc của anh ấy, không dùng danh xưng thân mật quá đà."
