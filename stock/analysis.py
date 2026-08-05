@@ -14,6 +14,7 @@ from stock import features as feat
 from stock import fundamentals
 from stock import policy
 from stock import providers
+from stock import report_format as rfmt
 from stock import sector
 from stock import validation
 import messages
@@ -60,7 +61,7 @@ _COMMON_WORD_EXCLUDE = {
 # Chỉ áp dụng cho token VIẾT THƯỜNG (xem detect_symbol_candidates). Tiếng Việt
 # không dấu sinh ra khá nhiều token 3-4 ký tự vô hại; loại sẵn nhóm hay gặp
 # nhất để đỡ tốn request verify tới DNSE. Tính đúng đắn vẫn do DNSE quyết
-# định - list này thuần tuý là tối ưu, không phải rào chắn.
+# định - list này thuần tuú là tối ưu, không phải rào chắn.
 _LOWERCASE_NOISE_EXCLUDE = {
     "BAO", "HOM", "MAI", "QUA", "DANG", "CHUA", "HAY", "TOI", "MINH",
     "VAN", "CON", "THI", "MOI", "BAY", "MUA", "BAN", "GIU", "SAN",
@@ -173,7 +174,7 @@ _STRONG_ANALYSIS_KEYWORDS = [
     "nen ban", "có nên", "co nen", "triển vọng", "trien vong", "review",
     "so sánh", "so sanh", "dự báo", "du bao", "xu hướng", "xu huong",
     "định giá", "dinh gia", "dòng tiền", "dong tien",
-    "xử lý sao", "xu ly sao", "cắt lỗ", "cat lo", "chốt lời", "chot loi",
+    "xủ lý sao", "xu ly sao", "cắt lỗ", "cat lo", "chốt lời", "chot loi",
     "giữ hay bán", "giu hay ban", "nên giữ", "nen giu",
 ]
 
@@ -234,7 +235,7 @@ def wants_price_quote(text: str, symbols: list[str]) -> bool:
 def looks_like_price_question(text: str) -> bool:
     """Tin nhắn RÕ RÀNG đang hỏi giá nhưng hệ thống không nhận ra mã nào.
 
-    Dùng để CHẶN, không đẩy câu hỏi xuống Gemini: khi không có khối
+    Dùng để CHẮN, không đẩy câu hỏi xuống Gemini: khi không có khối
     "[DỮ LIỆU GIÁ THỰC TẾ ...]" đi kèm, LLM gần như chắc chắn dựng ra một con
     số nghe hợp lý rồi trình bày như số liệu thật. Thà trả lời "không tra
     được mã" còn hơn trả lời sai số.
@@ -322,7 +323,7 @@ def _quote_time_note(q: providers.Quote, *, verbose: bool) -> str:
 def format_quote_message(q: providers.Quote) -> str:
     arrow, sign = ("🟢▲", "+") if q.change > 0 else ("🔴▼", "") if q.change < 0 else ("⚪", "")
     time_note = _quote_time_note(q, verbose=True)
-    return f"📊 **{q.symbol}**: **{_fmt_price(q.price)} VND** ({time_note})\n{arrow} {sign}{_fmt_price(q.change)} ({sign}{q.change_pct}%) so với phiên trước ({_fmt_price(q.prev_close)} VND)"
+    return f"📊 **{q.symbol}**: **{_fmt_price(q.price)} VND** ({time_note})\n{arrow} {sign}{_fmt_price(q.change)} ({sign}{rfmt.fmt_number(q.change_pct)}%) so với phiên trước ({_fmt_price(q.prev_close)} VND)"
 
 async def quick_quote(symbol: str) -> str:
     q = await providers.fetch_quote(symbol.strip().upper())
@@ -339,7 +340,7 @@ async def build_price_grounding(symbols: list[str]) -> str:
         if isinstance(res, BaseException) or res is None: continue
         time_note = _quote_time_note(res, verbose=False)
         sign = "+" if res.change > 0 else ""
-        lines.append(f"- {sym}: {_fmt_price(res.price)} VND ({time_note}), {sign}{_fmt_price(res.change)} ({sign}{res.change_pct}%) so với phiên trước ({_fmt_price(res.prev_close)} VND)")
+        lines.append(f"- {sym}: {_fmt_price(res.price)} VND ({time_note}), {sign}{_fmt_price(res.change)} ({sign}{rfmt.fmt_number(res.change_pct)}%) so với phiên trước ({_fmt_price(res.prev_close)} VND)")
     if not lines: return ""
     now = datetime.now(_VN_TZ)
     return f"[DỮ LIỆU GIÁ THỰC TẾ lúc {now:%H:%M %d/%m/%Y} giờ VN, lấy trực tiếp từ DNSE - đây là số liệu ĐÚNG duy nhất được phép dùng cho các mã dưới đây. TUYỆT ĐỐI KHÔNG tự suy diễn/bịa thêm số liệu nào khác ngoài danh sách này:\n" + "\n".join(lines) + "]"
@@ -363,6 +364,11 @@ class StockContext:
     liquidity: feat.Liquidity | None
     quality: validation.DataQuality
     realtime_quote_line: str | None = None
+    # Ngày của NẾN ĐÓNG CỬA được dùng để tính toàn bộ chỉ báo. Thiếu mốc này,
+    # báo cáo mô tả chỉ báo ở thể hiện tại ("đang loay hoay", "lực cầu chưa
+    # hào hứng") trong khi giá realtime đã +2,51% - mâu thuẫn ngay trong cùng
+    # một tin nhắn (ca CII ngày 05/08/2026).
+    last_bar_date: str = ""
 
 async def _safe_sector_prompt(symbol: str) -> str:
     try:
@@ -437,13 +443,20 @@ async def build_context(symbol: str, *, user_id: int | None = None, is_holding: 
     # một thời điểm để không tự mâu thuẫn nhau (P0-3). quote.price là tick
     # realtime, có thể lệch pha với closes[-1] (vd trước giờ mở cửa, hoặc
     # cuối tuần) - chỉ dùng để HIỂN THỊ "giá khớp hiện tại", không đưa vào
-    # tính toán stop/target/R:R.
+    # tính stop/target/R:R.
     analysis_price = symbol_series.price
+    last_bar_date = symbol_series.dates[-1] if symbol_series.dates else ""
     realtime_quote_line = None
     if quote is not None:
         time_note = _quote_time_note(quote, verbose=False)
         realtime_quote_line = f"Giá khớp hiện tại: {_fmt_price(quote.price)} VND ({time_note}) - CHỈ tham khảo hiển thị, KHÔNG dùng để tính stop/target/R:R bên dưới."
-    news_impact = providers.calc_news_impact(news)
+    # news_impact CHỈ được tính trên tin CÓ NHẮC ĐÚNG MÃ. providers.fetch_news
+    # truy vấn Google News bằng chuỗi "<mã> cổ phiếu" nhưng không kiểm tra mã
+    # có trong tiêu đề, nên tin thị trường chung/tin mã khác vẫn lọt vào. Khi
+    # dùng providers.calc_news_impact (trung bình sentiment MỌI tin), sentiment
+    # của tin không liên quan chảy thẳng vào PolicyInputs.news_impact, tức là
+    # ảnh hưởng trực tiếp tới khuyến nghị mua/bán.
+    news_impact = rfmt.relevant_news_impact([(n.title, n.sentiment) for n in news], symbol)
     stats = feat.calc_signal_stats(symbol_series.closes, symbol_series.volumes, analysis_price)
     relative_strength = round(_trend_pct(symbol_series.closes) - _trend_pct(vnindex_series.closes), 2)
 
@@ -467,12 +480,11 @@ async def build_context(symbol: str, *, user_id: int | None = None, is_holding: 
     decision = policy.evaluate_policy(policy.PolicyInputs(price=analysis_price, stats=stats, enhanced=enhanced, ma_alignment=ma_alignment, support_resistance=support_resistance, liquidity=liquidity, session=session, relative_strength=relative_strength, trend_score=trend_score, news_impact=news_impact, quality=quality, vnindex_multi_tf=vnindex_multi_tf, vnindex_adx=vnindex_adx, vnindex_distribution_days=vnindex_distribution_days, key_levels=key_levels, is_holding=holding))
     fetched_at_vn = datetime.now(_VN_TZ).strftime("%H:%M ngày %d/%m/%Y")
 
-    return StockContext(symbol, analysis_price, fetched_at_vn, stats, decision, enhanced, indicator_summary, support_resistance, key_levels, ma_alignment, sector_prompt, fundamentals_prompt, news, relative_strength, liquidity, quality, realtime_quote_line)
+    return StockContext(symbol, analysis_price, fetched_at_vn, stats, decision, enhanced, indicator_summary, support_resistance, key_levels, ma_alignment, sector_prompt, fundamentals_prompt, news, relative_strength, liquidity, quality, realtime_quote_line, last_bar_date)
 
 def _fmt_price(v: float | None) -> str:
-    if v is None:
-        return "N/A"
-    return f"{v:,.0f}".replace(",", ".")
+    # Nguồn duy nhất: stock/report_format.fmt_price (chuẩn VN, dấu chấm nghìn).
+    return rfmt.fmt_price(v)
 
 def _confidence_label(c: float) -> str:
     if c >= policy.CONFIDENCE_BUY_MIN: return "CAO"
@@ -486,23 +498,78 @@ _STOCK_PROMPT_TEMPLATE = _jinja_env.get_template("stock_analysis_prompt.j2")
 
 def build_prompt(ctx: StockContext) -> str:
     d = ctx.decision
+    price = ctx.price
+    atr_pct = ctx.enhanced.atr_pct if ctx.enhanced else None
     sr = ctx.support_resistance
-    support_resistance_line = f"Hỗ trợ/kháng cự (30 phiên): support {_fmt_price(sr.support)} ({sr.dist_to_support}%), resistance {_fmt_price(sr.resistance)} ({sr.dist_to_resistance}%)" if sr and sr.support else None
+    # Mọi mốc giá đưa vào prompt đều kèm khoảng cách % so với giá hiện tại:
+    # báo cáo FPT/GEX từng nêu mốc 70.370 / 31.900 như vùng giao dịch mà không
+    # cho người đọc biết mốc đó cách giá 1,6% hay 28%.
+    support_resistance_line = None
+    if sr and sr.support:
+        support_resistance_line = (
+            f"Hỗ trợ/kháng cự (biên 30 phiên): hỗ trợ {rfmt.format_level(price, sr.support)}, "
+            f"kháng cự {rfmt.format_level(price, sr.resistance)}"
+        )
     ma = ctx.ma_alignment
     ma_alignment_line = f"MA alignment: {ma.alignment} (MA5={_fmt_price(ma.ma5)}, MA10={_fmt_price(ma.ma10)}, MA20={_fmt_price(ma.ma20)})" if ma and ma.alignment != "unknown" else None
     liq = ctx.liquidity
-    liquidity_line = f"Thanh khoản: KL phiên gần nhất {liq.current_volume:,} so với TB 20 phiên {liq.avg_volume_20:,} ({liq.liquidity_ratio_pct}%)".replace(",", ".") if liq else None
-    news = [{"tag": "🟢" if n.sentiment > 0.2 else ("🔴" if n.sentiment < -0.2 else "⚪"), "title": n.title, "source": n.source} for n in ctx.news[:5]]
+    liquidity_line = f"Thanh khoản: KL phiên gần nhất {liq.current_volume:,} so với TB 20 phiên {liq.avg_volume_20:,} ({rfmt.fmt_number(liq.liquidity_ratio_pct, 1)}%)".replace(",", ".") if liq else None
+
+    # Tin có nhắc đúng mã được đẩy lên trước để không bị tin thị trường chung
+    # chiếm hết 5 suất, và từng tin được gắn cờ confirmed + ngày đăng.
+    ranked_news = sorted(ctx.news, key=lambda n: not rfmt.title_mentions_symbol(n.title, ctx.symbol))
+    news = [
+        {
+            "tag": "🟢" if n.sentiment > 0.2 else ("🔴" if n.sentiment < -0.2 else "⚪"),
+            "title": n.title,
+            "source": n.source,
+            "date": rfmt.fmt_news_date(n.pub_date),
+            "confirmed": rfmt.title_mentions_symbol(n.title, ctx.symbol),
+        }
+        for n in ranked_news[:5]
+    ]
 
     kl = ctx.key_levels
     key_levels_line = None
+    nearest_levels_line = None
     if kl and (kl.supports or kl.resistances):
         parts = []
         if kl.supports:
-            parts.append("Support: " + ", ".join(f"{_fmt_price(lv.price)} ({lv.touches} lần test)" for lv in kl.supports[:3]))
+            parts.append("Hỗ trợ: " + ", ".join(rfmt.format_level(price, lv.price, lv.touches) for lv in kl.supports[:3]))
         if kl.resistances:
-            parts.append("Resistance: " + ", ".join(f"{_fmt_price(lv.price)} ({lv.touches} lần test)" for lv in kl.resistances[:3]))
+            parts.append("Kháng cự: " + ", ".join(rfmt.format_level(price, lv.price, lv.touches) for lv in kl.resistances[:3]))
         key_levels_line = "Vùng giá quan trọng (swing pivot, 60 phiên): " + " | ".join(parts)
+        nearest_levels_line = rfmt.nearest_levels_line(
+            price,
+            [(lv.price, lv.touches) for lv in kl.supports],
+            [(lv.price, lv.touches) for lv in kl.resistances],
+            atr_pct=atr_pct,
+        )
+
+    # MACD quy theo % giá + ADX kèm hướng +DI/-DI. build_indicator_summary đã in
+    # đủ số, nhưng dạng số trơ khiến LLM diễn giải sai độ mạnh (MACD +24.44
+    # trên cổ phiếu 14.000đ) và bỏ qua hướng (ADX 43,7 của mã đang giảm bị gọi
+    # là "xu hướng mạnh" theo nghĩa tích cực).
+    momentum_detail_line = None
+    ma_distance_line = None
+    if ctx.enhanced:
+        e = ctx.enhanced
+        momentum_detail_line = "\n".join([
+            rfmt.macd_strength_line(e.macd.macd_line, e.macd.histogram, price),
+            rfmt.adx_direction_line(e.adx.adx, e.adx.di_plus, e.adx.di_minus, e.adx.trending, available=e.adx.available),
+        ])
+        ma_distance_line = (
+            f"Giá vs đường trung bình: SMA20 {rfmt.format_level(price, e.sma20)}, "
+            f"SMA50 {rfmt.format_level(price, e.sma50)}"
+        )
+
+    data_as_of_line = None
+    if ctx.last_bar_date:
+        data_as_of_line = (
+            f"Toàn bộ chỉ báo kỹ thuật bên dưới được tính trên NẾN ĐÓNG CỬA ngày "
+            f"{ctx.last_bar_date}, KHÔNG phải giá đang khớp - khi mô tả chỉ báo phải "
+            f"gắn mốc thời gian này."
+        )
 
     trade_plan = None
     if d.trade_plan:
@@ -523,13 +590,17 @@ def build_prompt(ctx: StockContext) -> str:
         confidence=d.confidence, confidence_label=_confidence_label(d.confidence), setup_type=d.setup_type,
         market_regime=d.market_regime, risk_level=d.risk_level, data_quality=d.data_quality,
         reasons_text="; ".join(d.reasons[:6]) if d.reasons else "", invalidation_reason=d.invalidation_reason,
-        trend_3m=ctx.stats.trend_3m, momentum=ctx.stats.momentum, volume_trend=ctx.stats.volume_trend,
-        volatility=ctx.stats.volatility, rsi14=ctx.stats.rsi14 if ctx.stats.rsi14 is not None else "chưa đủ dữ liệu",
-        relative_strength=ctx.relative_strength, indicator_summary=ctx.indicator_summary,
+        trend_3m=rfmt.fmt_number(ctx.stats.trend_3m), momentum=rfmt.fmt_number(ctx.stats.momentum),
+        volume_trend=rfmt.fmt_number(ctx.stats.volume_trend),
+        volatility=rfmt.fmt_number(ctx.stats.volatility),
+        rsi14=rfmt.fmt_number(ctx.stats.rsi14, 1) if ctx.stats.rsi14 is not None else "chưa đủ dữ liệu",
+        relative_strength=rfmt.fmt_number(ctx.relative_strength), indicator_summary=ctx.indicator_summary,
         support_resistance_line=support_resistance_line, ma_alignment_line=ma_alignment_line,
         liquidity_line=liquidity_line, liquidity_thin_warning=liq.is_thin if liq else False,
         sector_prompt=ctx.sector_prompt, fundamentals_prompt=ctx.fundamentals_prompt, news=news,
         realtime_quote_line=ctx.realtime_quote_line, key_levels_line=key_levels_line,
+        nearest_levels_line=nearest_levels_line, momentum_detail_line=momentum_detail_line,
+        ma_distance_line=ma_distance_line, data_as_of_line=data_as_of_line,
         trade_plan=trade_plan, scenarios=scenarios, backtest_stats_line=backtest_stats_line,
     )
 
@@ -547,97 +618,10 @@ def _fallback_text(ctx: StockContext) -> str:
         f"📊 **{ctx.symbol}** — **{_fmt_price(ctx.price)} VND** ({ctx.fetched_at_vn})",
         f"Tín hiệu: **{action_label}** (confidence {d.confidence}, setup {d.setup_type}, regime {d.market_regime})",
         price_line,
-        f"RSI14 {ctx.stats.rsi14 if ctx.stats.rsi14 is not None else 'chưa đủ dữ liệu'} | Trend ~3M {ctx.stats.trend_3m}% | Risk: {d.risk_level}",
+        f"RSI14 {rfmt.fmt_number(ctx.stats.rsi14, 1) if ctx.stats.rsi14 is not None else 'chưa đủ dữ liệu'} | Trend ~3M {rfmt.fmt_number(ctx.stats.trend_3m)}% | Risk: {d.risk_level}",
     ]
+    if ctx.last_bar_date: lines.append(f"Chỉ báo tính trên nến đóng cửa ngày {ctx.last_bar_date}.")
     if d.reasons: lines.append("Lý do: " + "; ".join(d.reasons[:4]))
     if d.invalidation_reason: lines.append(f"Lưu ý: {d.invalidation_reason}")
     if ctx.realtime_quote_line: lines.append(ctx.realtime_quote_line)
-    if ctx.liquidity and ctx.liquidity.is_thin: lines.append("⚠️ Thanh khoản TB20 quá thấp.")
-    if ctx.quality.status != "ok": lines.append(f"⚠️ Chất lượng dữ liệu: {ctx.quality.status}")
-    lines.append("⚠️ API dự phòng không phản hồi nên đây là bản rút gọn.")
-    return "\n".join(lines)
-
-_STALE_NOTE = "\n\n⏱️ _Lưu ý: dữ liệu/thời điểm bên trên là của lần phân tích gần nhất_"
-
-PORTFOLIO_KEYWORDS = ["cơ cấu", "co cau", "danh mục", "danh muc", "tỷ trọng", "ty trong", "giữ hay bán", "nên giữ mã nào"]
-
-def wants_portfolio_analysis(text: str, symbols: list[str]) -> bool:
-    if len(symbols) < 2: return False
-    lower = text.lower()
-    return any(kw in lower for kw in PORTFOLIO_KEYWORDS)
-
-async def analyze_portfolio(symbols: list[str], user_text: str, *, user_id: int | None = None) -> str:
-    # Dùng chung _is_holding_symbol với analyze_symbol thay vì gắn cứng
-    # is_holding=True cho mọi mã - tránh 2 đường (phân tích đơn lẻ vs danh
-    # mục) cho action khác nhau với cùng 1 mã khi user hỏi cả 2 kiểu.
-    holdings = await asyncio.gather(*[_is_holding_symbol(user_id, sym) for sym in symbols])
-    tasks = [build_context(sym, user_id=user_id, is_holding=holding) for sym, holding in zip(symbols, holdings)]
-    contexts = await asyncio.gather(*tasks, return_exceptions=True)
-    valid_contexts = [ctx for ctx in contexts if not isinstance(ctx, BaseException) and ctx is not None]
-    if not valid_contexts:
-        return "Em không lấy được dữ liệu của các mã này lúc này, anh thử lại sau xíu nha."
-
-    combined_data = []
-    for ctx in valid_contexts:
-        d = ctx.decision
-        sr_line = f"Hỗ trợ: {_fmt_price(ctx.support_resistance.support)} | Kháng cự: {_fmt_price(ctx.support_resistance.resistance)}" if ctx.support_resistance else "Không rõ"
-        trend_line = f"RSI: {ctx.stats.rsi14} | Trend 3M: {ctx.stats.trend_3m}%"
-        combined_data.append(f"Mã {ctx.symbol}: Giá {_fmt_price(ctx.price)} | Tín hiệu hệ thống: {d.action} (Độ tin cậy: {d.confidence}) | {trend_line} | {sr_line}")
-
-    data_text = "\n".join(combined_data)
-    prompt = (
-        f"[DỮ LIỆU KỸ THUẬT DANH MỤC LÚC NÀY]:\n{data_text}\n\n"
-        f"[CÂU HỎI TỪ NGƯỜI DÙNG]:\n\"{user_text}\"\n\n"
-        f"Lan Anh hãy đóng vai broker chuyên nghiệp tư vấn CƠ CẤU DANH MỤC. "
-        f"So sánh sức mạnh các mã, khuyên mã nào nên giữ/gồng lãi, mã nào vi phạm kỹ thuật cần hạ tỷ trọng/cắt lỗ. "
-        f"Văn phong: Ngọt ngào, đồng cảm, xưng em/anh tự nhiên, rõ ràng."
-    )
-
-    from ai import orchestrator
-    try:
-        response = await orchestrator.ask(prompt)
-        result = (response.text or "").strip()
-        if result and getattr(response, "used_fallback", False): result += "\n\n⚙️ API"
-        return result
-    except Exception:
-        logger.exception("Lỗi khi tổng hợp danh mục")
-        return "Em đang gặp chút sự cố khi phân tích danh mục, anh chờ chút thử lại nha."
-
-async def analyze_symbol(symbol: str, user_text: str = "", *, force_refresh: bool = False, user_id: int | None = None) -> str:
-    symbol = symbol.strip().upper()
-    holding = await _is_holding_symbol(user_id, symbol)
-    if not force_refresh and not user_text:
-        cached = _cache_get(symbol, holding)
-        if cached: return cached + _STALE_NOTE
-
-    try:
-        ctx = await build_context(symbol, user_id=user_id, is_holding=holding)
-    except Exception:
-        logger.exception("Lỗi lấy dữ liệu phân tích %s", symbol)
-        ctx = None
-    if ctx is None: return messages.STOCK_FETCH_ERROR.format(symbol=symbol)
-
-    prompt = build_prompt(ctx)
-    if user_text:
-        prompt += (
-            f"\n\n[LƯU Ý QUAN TRỌNG TỪ HỆ THỐNG]:\n"
-            f"Người dùng vừa hỏi: \"{user_text}\"\n"
-            f"Lan Anh hãy phân tích kỹ thuật ở trên, ĐỒNG THỜI phải trả lời trực tiếp "
-            f"vào tình huống này của anh ấy (tính mức lời/lỗ, đồng cảm, "
-            f"hướng xử lý cụ thể dựa trên Action đã chốt). Nhớ giữ giọng điệu Lan Anh!"
-        )
-
-    from ai import orchestrator
-    try:
-        response = await orchestrator.ask(prompt)
-        text = (response.text or "").strip()
-        result = text or _fallback_text(ctx)
-        if text and getattr(response, "used_fallback", False): result += "\n\n⚙️ API"
-    except Exception:
-        logger.exception("Gemini lỗi khi phân tích %s", symbol)
-        result = _fallback_text(ctx)
-
-    if not user_text:
-        _cache_set(symbol, holding, result)
-
-    return result
+    if ctx.liquidity and ctx.liquidity.is_thin: lines.append("⚠️ Thanh khoản TB
