@@ -21,7 +21,14 @@ from stock import providers
 #     - token đó bị lọc bỏ trước khi tra bản đồ nên sẽ không bao giờ nhận ra.
 #     Nếu buộc phải thêm, khai báo nó trong _AMBIGUOUS_KNOWN thay vì ở đây.
 #     test/test_sector_map.py canh giúp điều kiện này.
-#   - Một mã có thể thuộc nhiều ngành (vd REE ở cả industrial lẫn utilities).
+#   - Một mã có thể thuộc nhiều ngành (vd REE ở cả electrical lẫn utilities).
+#
+# ĐỘ MỊN CỦA NGÀNH là vấn đề đúng/sai, không phải thẩm mỹ: hiệu suất ngành
+# được đưa thẳng vào prompt như một luận cứ ("ngành X giảm 11,51%/1 tháng").
+# Ngày 05/08/2026, CII (hạ tầng giao thông BOT) và GEX (thiết bị điện) cùng
+# nằm trong ngành gộp "Khu công nghiệp & Xây dựng" nên hai báo cáo khác nhau
+# nhận CÙNG một con số ngành - một luận cứ sai cho cả hai mã. Vì vậy nhóm này
+# được tách thành industrial_park / construction / electrical.
 SECTOR_MAP: dict[str, dict] = {
     "banking":    {"label": "Ngân hàng",                 "symbols": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "HDB", "STB", "EIB", "TPB", "SHB", "VIB", "LPB", "SSB", "MSB", "OCB", "NAB", "BAB", "ABB"]},
     "steel":      {"label": "Thép",                       "symbols": ["HPG", "HSG", "NKG", "TLH", "SMC", "VGS", "TVN"]},
@@ -39,7 +46,9 @@ SECTOR_MAP: dict[str, dict] = {
     "textile":    {"label": "Dệt may",                    "symbols": ["VGT", "TNG", "MSH", "TCM", "STK", "GIL"]},
     "pharma":     {"label": "Dược phẩm & Y tế",           "symbols": ["DHG", "IMP", "DBD", "DVN", "DHT"]},
     "materials":  {"label": "Vật liệu xây dựng",          "symbols": ["VGC", "HT1", "BMP", "NTP", "VCS", "PTB", "BCC", "CVT", "KSB", "DHA"]},
-    "industrial": {"label": "Khu công nghiệp & Xây dựng", "symbols": ["GEX", "CTD", "VCG", "REE", "CII", "KBC", "BCM", "SIP", "IDC", "HHV", "LCG", "FCN", "TCD"]},
+    "industrial_park": {"label": "Khu công nghiệp",       "symbols": ["KBC", "BCM", "IDC", "SIP"]},
+    "construction": {"label": "Xây dựng & Hạ tầng",       "symbols": ["CTD", "VCG", "HHV", "CII", "LCG", "FCN", "TCD"]},
+    "electrical": {"label": "Thiết bị điện & Công nghiệp", "symbols": ["GEX", "REE", "PC1"]},
     "utilities":  {"label": "Điện & Tiện ích",            "symbols": ["POW", "REE", "GAS", "PLC", "NT2", "PC1", "GEG", "VSH", "QTP", "HDG"]},
     "logistics":  {"label": "Vận tải & Logistics",        "symbols": ["GMD", "PVT", "ACV", "VJC", "VTP", "HAH", "VSC", "VOS", "TMS", "PHP"]},
 }
