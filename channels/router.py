@@ -16,6 +16,7 @@ from channels.contracts import (
     ZaloOutboxItem,
 )
 from channels.group_commands import maybe_handle_group_command
+from channels.zalo_text import to_plain_text
 from core import config, idempotency
 from services.channel_chat_service import handle_channel_text, split_for_zalo
 from services.channel_image_service import MAX_ZALO_IMAGE_BYTES, handle_channel_image
@@ -68,6 +69,11 @@ async def _auth_sender(secret, sender):
     controller = await _controller()
     if not controller or not hmac.compare_digest(sender, controller):
         raise HTTPException(403, "Sender is not allowed")
+
+
+def _zalo_chunks(outputs: list[str]) -> list[str]:
+    """Zalo không render markdown, lọc sạch trước khi cắt tin."""
+    return [chunk for message in outputs for chunk in split_for_zalo(to_plain_text(message))]
 
 
 @router.get("/session")
@@ -137,7 +143,7 @@ async def receive(
         if result is None:
             result = await handle_channel_text(_shared_user_id(), payload.text.strip())
         response = ZaloMessageResponse(
-            messages=[chunk for message in result.messages for chunk in split_for_zalo(message)],
+            messages=_zalo_chunks(result.messages),
             provider=result.provider,
         )
         await idempotency.save_zalo_response(
@@ -182,7 +188,7 @@ async def image_prompt(
             x_zalo_message_id,
         )
         response = ZaloMessageResponse(
-            messages=[chunk for message in messages for chunk in split_for_zalo(message)],
+            messages=_zalo_chunks(messages),
             provider=provider,
         )
         await idempotency.save_zalo_response(
