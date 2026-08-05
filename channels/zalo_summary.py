@@ -1,19 +1,13 @@
 """Group summary generation shared by controller commands and the daily job."""
 
-import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ai import orchestrator
 from channels import zalo_repository
+from channels.zalo_text import to_plain_text
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-
-# Zalo chỉ hiển thị plain text nên mọi cú pháp markdown sẽ lộ ký tự thô.
-_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
-_EMPHASIS = re.compile(r"(\*{1,3}|_{2,3})(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
-_BULLET = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
-_EXTRA_BLANK_LINES = re.compile(r"\n{3,}")
 
 # Dưới các ngưỡng này, tóm tắt bằng AI chỉ tạo ra suy diễn thừa.
 VERBATIM_MESSAGE_LIMIT = 2
@@ -21,15 +15,28 @@ SHORT_SUMMARY_MESSAGE_LIMIT = 5
 _CHUNK_CHAR_LIMIT = 18_000
 _EMPTY_BODY = "Không tạo được nội dung tổng kết."
 
+_SECTION_TITLES = (
+    "MÃ ĐƯỢC BÀN",
+    "NHẬN ĐỊNH THỊ TRƯỜNG",
+    "HÀNH ĐỘNG ĐƯỢC KHUYẾN NGHỊ",
+    "CẢNH BÁO VÀ TIN CẦN THEO DÕI",
+    "NGUYÊN VĂN",
+)
+
 _GROUNDING = (
     "Chỉ dùng dữ liệu được cung cấp. Không bịa giá, không bịa khuyến nghị, "
     "không bịa người nêu, không suy diễn ý định. Phân biệt rõ nhận định cá nhân "
     "với thông tin đã được xác nhận."
 )
 
+_NOISE = (
+    "Bỏ hẳn nội dung quảng cáo dịch vụ môi giới, ưu đãi lãi margin, mời mở tài "
+    "khoản, mời chuyển sàn, và lời nhắc mang tính cá nhân giữa các thành viên."
+)
+
 _STYLE = (
     "Định dạng cho Zalo: PLAIN TEXT. Cấm dùng **, *, _, #, ### và bảng markdown. "
-    'Tiêu đề mục viết IN HOA, gạch đầu dòng dùng "•". '
+    'Tiêu đề mục viết IN HOA trên dòng riêng, gạch đầu dòng dùng "•". '
     "Không thêm tiêu đề nhóm, không thêm lời dẫn mở đầu, bắt đầu ngay ở mục đầu tiên. "
     'Bỏ hẳn mục nào không có dữ liệu, không ghi "không có thông tin".'
 )
@@ -37,10 +44,13 @@ _STYLE = (
 _SECTIONS = (
     "CẤU TRÚC BÁO CÁO:\n"
     "MÃ ĐƯỢC BÀN: mỗi mã một dòng gồm mã, quan điểm mua/bán/giữ, vùng giá nếu nguồn "
-    "nêu, người nêu.\n"
+    "nêu, người nêu. Bỏ qua mã chỉ được nhắc tên mà không kèm quan điểm, vùng giá "
+    "hay hành động nào.\n"
     "NHẬN ĐỊNH THỊ TRƯỜNG: chỉ số, thanh khoản, vùng cản hoặc hỗ trợ được nhắc.\n"
-    "HÀNH ĐỘNG ĐƯỢC KHUYẾN NGHỊ: tỷ trọng, chốt lời, cắt lỗ, kèm người nêu.\n"
-    "CẢNH BÁO VÀ TIN CẦN THEO DÕI."
+    "HÀNH ĐỘNG ĐƯỢC KHUYẾN NGHỊ: chỉ ghi khuyến nghị nêu cho cả nhóm, kèm người nêu. "
+    "Hành động cá nhân của thành viên như tự mua, tự chốt, tự all-in hay dùng margin "
+    "không phải khuyến nghị, để ở dòng mã tương ứng.\n"
+    "CẢNH BÁO VÀ TIN CẦN THEO DÕI: chỉ cảnh báo về mã, thị trường hoặc sự kiện."
 )
 
 
@@ -49,14 +59,17 @@ def _chunk_prompt(index: int, total: int) -> str:
         "Bạn đang đọc tin nhắn của một room chứng khoán Việt Nam. "
         f"{_GROUNDING}\n"
         "Ghi lại các mã được nhắc kèm quan điểm và vùng giá, nhận định thị trường, "
-        f"khuyến nghị hành động và cảnh báo. Đây là phần {index}/{total}."
+        "khuyến nghị hành động và cảnh báo. Ghi rõ đâu là khuyến nghị cho cả nhóm, "
+        f"đâu là hành động cá nhân. {_NOISE}\n"
+        f"Đây là phần {index}/{total}."
     )
 
 
 def _merge_prompt(alias: str) -> str:
     return (
         f"Hợp nhất các bản tóm tắt của room chứng khoán {alias} thành một báo cáo "
-        f"tiếng Việt ngắn gọn, không lặp nội dung.\n{_GROUNDING}\n{_STYLE}\n{_SECTIONS}"
+        f"tiếng Việt ngắn gọn, không lặp nội dung.\n{_GROUNDING}\n{_NOISE}\n"
+        f"{_STYLE}\n{_SECTIONS}"
     )
 
 
@@ -64,17 +77,24 @@ def _short_prompt(alias: str) -> str:
     return (
         f"Room chứng khoán {alias} chỉ có vài tin nhắn trong khoảng này. Liệt kê gọn "
         "từng nội dung thực sự có, mỗi ý một dòng, không thêm mục trống, không suy "
-        f"diễn và không viết phần rủi ro nếu nguồn không nhắc.\n{_GROUNDING}\n{_STYLE}"
+        "diễn và không viết phần rủi ro nếu nguồn không nhắc.\n"
+        f"{_GROUNDING}\n{_NOISE}\n{_STYLE}"
     )
 
 
-def to_plain_text(text: str) -> str:
-    """Bỏ markdown còn sót để Zalo không hiển thị ký tự thô."""
-    cleaned = _HEADING.sub("", text or "")
-    cleaned = _EMPHASIS.sub(r"\2", cleaned)
-    cleaned = _BULLET.sub(r"\1• ", cleaned)
-    cleaned = _EXTRA_BLANK_LINES.sub("\n\n", cleaned)
-    return cleaned.strip()
+def _space_sections(text: str) -> str:
+    """Chèn dòng trắng trước mỗi tiêu đề mục cho dễ đọc trên Zalo."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        title = line.strip().rstrip(":").upper()
+        if title.startswith(_SECTION_TITLES) and out and out[-1].strip():
+            out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
+def _render(body: str) -> str:
+    return _space_sections(to_plain_text(body))
 
 
 def resolve_window(spec: str, now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -146,11 +166,11 @@ async def summarize_group(
 
     if len(rows) <= VERBATIM_MESSAGE_LIMIT:
         body = "NGUYÊN VĂN (quá ít tin để tổng kết):\n" + "\n".join(lines)
-        return group_id, alias, header + to_plain_text(body)
+        return group_id, alias, header + _render(body)
 
     if len(rows) <= SHORT_SUMMARY_MESSAGE_LIMIT:
         short = await _ask(_short_prompt(alias) + "\n\n" + "\n".join(lines))
-        return group_id, alias, header + (to_plain_text(short) or _EMPTY_BODY)
+        return group_id, alias, header + (_render(short) or _EMPTY_BODY)
 
     chunks = _chunks(lines)
     partials: list[str] = []
@@ -159,4 +179,4 @@ async def summarize_group(
 
     combined = "\n\n--- PHẦN ---\n\n".join(partials)
     final = await _ask(_merge_prompt(alias) + "\n\n" + combined)
-    return group_id, alias, header + (to_plain_text(final) or _EMPTY_BODY)
+    return group_id, alias, header + (_render(final) or _EMPTY_BODY)
