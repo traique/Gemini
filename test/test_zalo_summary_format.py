@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from channels import zalo_summary
+from channels.zalo_text import to_plain_text
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 START = datetime(2026, 8, 4, 9, 0, tzinfo=VN_TZ)
@@ -32,12 +33,24 @@ def _patch_group(monkeypatch, rows):
 
 def test_to_plain_text_removes_markdown():
     raw = "### BÁO CÁO\n**Tóm tắt nhanh**\n* *Mã PPC:* mua quanh 8.8\n\n\n\nhết"
-    out = zalo_summary.to_plain_text(raw)
+    out = to_plain_text(raw)
     assert "#" not in out
     assert "*" not in out
     assert "BÁO CÁO" in out
     assert "• Mã PPC: mua quanh 8.8" in out
     assert "\n\n\n" not in out
+
+
+def test_to_plain_text_cleans_quote_message():
+    raw = "📊 **GEX**: **24.900 VND** (khớp lệnh realtime lúc 10:54)"
+    out = to_plain_text(raw)
+    assert out == "📊 GEX: 24.900 VND (khớp lệnh realtime lúc 10:54)"
+
+
+def test_section_titles_get_blank_line():
+    body = "MÃ ĐƯỢC BÀN\n• VIX: giữ\nCẢNH BÁO VÀ TIN CẦN THEO DÕI\n• chợ phiên cuối tuần"
+    out = zalo_summary._render(body)
+    assert "• VIX: giữ\n\nCẢNH BÁO VÀ TIN CẦN THEO DÕI" in out
 
 
 @pytest.mark.asyncio
@@ -91,5 +104,7 @@ async def test_long_group_uses_stock_prompt_and_plain_text(monkeypatch):
     assert len(prompts) == 2
     assert "MÃ ĐƯỢC BÀN" in prompts[-1]
     assert "Quyết định đã chốt" not in prompts[-1]
+    assert "mã chỉ được nhắc tên" in prompts[-1]
+    assert "ưu đãi lãi margin" in prompts[-1]
     assert "#" not in content
     assert "**" not in content
