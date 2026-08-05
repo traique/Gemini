@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from stock import report_format as rfmt
 
-# Gap trong khoảng này: có thể là trần/sàn liên tiếp thật, cũng có thể là ngày GDKHQ.
+# Gap trong khoảng này: có thể là trần/sàn liên tiếp thật, cũng có thể là GDKHQ.
 SUSPECT_GAP_PCT = 12.0
 # Vượt mức này thì không còn cách giải thích nào khác ngoài corporate action.
 CERTAIN_GAP_PCT = 25.0
@@ -31,8 +31,9 @@ _RATIO_TOLERANCE_PCT = 1.5
 _MAX_GAPS_IN_NOTE = 2
 
 # (nhãn tiếng Việt, % giảm lý thuyết của giá tham chiếu). Chỉ liệt kê các tỷ lệ
-tạo gap lớn hơn SUSPECT_GAP_PCT; tỷ lệ nhỏ hơn (vd cổ tức cổ phiếu 10% = -9,09%)
-nạm trong biên độ giao dịch bình thường nên không thể phân biệt bằng giá.
+# tạo gap lớn hơn SUSPECT_GAP_PCT; tỷ lệ nhỏ hơn (vd cổ tức cổ phiếu 10% =
+# -9,09%) nằm trong biên độ giao dịch bình thường nên không thể phân biệt
+# được bằng giá.
 _COMMON_RATIOS = (
     ("thưởng/chia tỷ lệ 1:1", 50.0),
     ("chia tỷ lệ 1:2", 33.33),
@@ -99,9 +100,10 @@ def detect_price_gaps(
 def infer_is_adjusted(closes, dates=None) -> bool | None:
     """False khi chắc chắn chuỗi chưa điều chỉnh, None khi không xác định được.
 
-    KHÔNG bao giờ trả True: không thấy gap chỉ có nghĩa "trong cửa sổ dữ liệu này
-    không có sự kiện quyền nào đủ lớn để nhìn ra", không phải bằng chứng nguồn
-dữ liệu có điều chỉnh. Khảng định True ở đây sẽ tạo cảm giác an toàn giả.
+    KHÔNG bao giờ trả True: không thấy gap chỉ có nghĩa là trong cửa sổ dữ liệu
+    này không có sự kiện quyền nào đủ lớn để nhìn ra, chứ không phải bằng chứng
+    nguồn dữ liệu có điều chỉnh. Khẳng định True ở đây sẽ tạo cảm giác an toàn
+    giả.
     """
     for gap in detect_price_gaps(closes, dates):
         if gap.level == "certain":
